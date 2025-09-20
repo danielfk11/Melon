@@ -1,0 +1,15 @@
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/bin/Debug/net8.0/MelonMQ.Common.deps.json
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/bin/Debug/net8.0/MelonMQ.Common.dll
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/bin/Debug/net8.0/MelonMQ.Common.pdb
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/bin/Debug/net8.0/MelonMQ.Common.xml
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.csproj.AssemblyReference.cache
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.GeneratedMSBuildEditorConfig.editorconfig
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.AssemblyInfoInputs.cache
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.AssemblyInfo.cs
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.csproj.CoreCompileInputs.cache
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.sourcelink.json
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.dll
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/refint/MelonMQ.Common.dll
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.xml
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/MelonMQ.Common.pdb
+/Users/daniel/Repos/Melon/src/MelonMQ.Common/obj/Debug/net8.0/ref/MelonMQ.Common.dll

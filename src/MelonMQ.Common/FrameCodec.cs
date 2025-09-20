@@ -7,7 +7,7 @@ namespace MelonMQ.Common;
 /// <summary>
 /// A frame in the MelonMQ protocol
 /// </summary>
-public readonly ref struct ProtocolFrame
+public readonly struct ProtocolFrame
 {
     public ushort Magic { get; init; }
     public byte Version { get; init; }
@@ -15,7 +15,7 @@ public readonly ref struct ProtocolFrame
     public FrameFlags Flags { get; init; }
     public int Length { get; init; }
     public ulong CorrelationId { get; init; }
-    public ReadOnlySpan<byte> Payload { get; init; }
+    public ReadOnlyMemory<byte> Payload { get; init; }
     
     public bool IsRequest => (Flags & FrameFlags.Request) != 0;
     public bool IsDurable => (Flags & FrameFlags.Durable) != 0;
@@ -39,16 +39,28 @@ public static class FrameCodec
         var checkpoint = reader.Position;
         
         // Read header
-        if (!reader.TryReadLittleEndian(out ushort magic) ||
-            !reader.TryRead(out byte version) ||
+        if (reader.Remaining < 2) return false;
+        var magicBytes = reader.UnreadSequence.Slice(0, 2);
+        reader.Advance(2);
+        ushort magic = BinaryPrimitives.ReadUInt16LittleEndian(magicBytes.FirstSpan);
+        
+        if (!reader.TryRead(out byte version) ||
             !reader.TryRead(out byte type) ||
-            !reader.TryRead(out byte flags) ||
-            !reader.TryReadLittleEndian(out int length) ||
-            !reader.TryReadLittleEndian(out ulong correlationId))
+            !reader.TryRead(out byte flags))
         {
             reader.Rewind(reader.Position.GetInteger() - checkpoint.GetInteger());
             return false;
         }
+        
+        if (reader.Remaining < 4) return false;
+        var lengthBytes = reader.UnreadSequence.Slice(0, 4);
+        reader.Advance(4);
+        int length = BinaryPrimitives.ReadInt32LittleEndian(lengthBytes.FirstSpan);
+        
+        if (reader.Remaining < 8) return false;
+        var corrIdBytes = reader.UnreadSequence.Slice(0, 8);
+        reader.Advance(8);
+        ulong correlationId = BinaryPrimitives.ReadUInt64LittleEndian(corrIdBytes.FirstSpan);
         
         // Validate frame
         if (magic != ProtocolConstants.Magic || 
@@ -78,7 +90,7 @@ public static class FrameCodec
             Flags = (FrameFlags)flags,
             Length = length,
             CorrelationId = correlationId,
-            Payload = payload.IsSingleSegment ? payload.FirstSpan : payload.ToArray()
+            Payload = payload.IsSingleSegment ? payload.FirstSpan.ToArray() : payload.ToArray()
         };
         
         return true;
@@ -112,7 +124,7 @@ public ref struct TlvReader
     
     public TlvReader(ReadOnlySpan<byte> data)
     {
-        _reader = new SequenceReader<byte>(new ReadOnlySequence<byte>(data));
+        _reader = new SequenceReader<byte>(new ReadOnlySequence<byte>(data.ToArray()));
     }
     
     public bool TryReadString(out string value)
