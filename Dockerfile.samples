@@ -1,0 +1,38 @@
+# MelonMQ Samples Dockerfile
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# Copy solution and project files
+COPY ["MelonMQ.sln", "./"]
+COPY ["src/MelonMQ.Client/MelonMQ.Client.csproj", "src/MelonMQ.Client/"]
+COPY ["samples/Producer/Producer.csproj", "samples/Producer/"]
+COPY ["samples/Consumer/Consumer.csproj", "samples/Consumer/"]
+
+# Restore dependencies
+RUN dotnet restore "samples/Producer/Producer.csproj"
+RUN dotnet restore "samples/Consumer/Consumer.csproj"
+
+# Copy source code
+COPY . .
+
+# Build Producer
+FROM build AS producer-build
+WORKDIR "/src/samples/Producer"
+RUN dotnet build "Producer.csproj" -c Release -o /app/producer
+
+# Build Consumer
+FROM build AS consumer-build
+WORKDIR "/src/samples/Consumer"
+RUN dotnet build "Consumer.csproj" -c Release -o /app/consumer
+
+# Producer runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS producer
+WORKDIR /app
+COPY --from=producer-build /app/producer .
+ENTRYPOINT ["dotnet", "Producer.dll"]
+
+# Consumer runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS consumer
+WORKDIR /app
+COPY --from=consumer-build /app/consumer .
+ENTRYPOINT ["dotnet", "Consumer.dll"]

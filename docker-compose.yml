@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  melonmq:
+    build: .
+    container_name: melonmq-broker
+    ports:
+      - "5672:5672"  # TCP port for MQ protocol
+      - "8080:8080"  # HTTP port for admin API
+    volumes:
+      - melonmq-data:/app/data
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      - MelonMQ__DataDirectory=/app/data
+      - MelonMQ__TcpPort=5672
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  producer-sample:
+    build:
+      context: .
+      dockerfile: Dockerfile.samples
+      target: producer
+    container_name: melonmq-producer
+    depends_on:
+      - melonmq
+    environment:
+      - MELONMQ_CONNECTION=melon://melonmq:5672
+    profiles:
+      - samples
+
+  consumer-sample:
+    build:
+      context: .
+      dockerfile: Dockerfile.samples
+      target: consumer
+    container_name: melonmq-consumer
+    depends_on:
+      - melonmq
+    environment:
+      - MELONMQ_CONNECTION=melon://melonmq:5672
+    profiles:
+      - samples
+
+volumes:
+  melonmq-data:

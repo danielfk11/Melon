@@ -10,15 +10,13 @@
 using System;
 using System.Reflection;
 
-[assembly: System.Reflection.AssemblyCompanyAttribute("MelonMQ")]
+[assembly: System.Reflection.AssemblyCompanyAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
-[assembly: System.Reflection.AssemblyCopyrightAttribute("Copyright © 2025 MelonMQ")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9af8bbb7744f49caacfd21103443e770f382ffca")]
-[assembly: System.Reflection.AssemblyProductAttribute("MelonMQ")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d7d86d5f8f1d3983eb87a73f21e27d0c70af68ea")]
+[assembly: System.Reflection.AssemblyProductAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyMetadataAttribute("RepositoryUrl", "https://github.com/danielfk11/Melon")]
 
 // Gerado pela classe WriteCodeFragment do MSBuild.
 
