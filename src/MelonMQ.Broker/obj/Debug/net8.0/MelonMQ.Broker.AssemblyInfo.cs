@@ -10,13 +10,15 @@
 using System;
 using System.Reflection;
 
-[assembly: System.Reflection.AssemblyCompanyAttribute("MelonMQ.Broker")]
+[assembly: System.Reflection.AssemblyCompanyAttribute("MelonMQ Team")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyDescriptionAttribute("High-performance message broker optimized for .NET applications")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d7d86d5f8f1d3983eb87a73f21e27d0c70af68ea")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f99e24608c781fb8e2739fd3dca9ebbd767e0252")]
 [assembly: System.Reflection.AssemblyProductAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyMetadataAttribute("RepositoryUrl", "https://github.com/danielfk11/MelonMQ")]
 
 // Gerado pela classe WriteCodeFragment do MSBuild.
 

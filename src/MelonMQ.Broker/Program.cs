@@ -5,6 +5,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Configure services
 builder.Services.AddLogging();
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(builder =>
+    {
+        builder.AllowAnyOrigin()
+               .AllowAnyHeader()
+               .AllowAnyMethod();
+    });
+});
+
 builder.Services.AddSingleton<QueueManager>(provider =>
 {
     var config = provider.GetService<IConfiguration>();
@@ -28,8 +38,17 @@ builder.Services.AddHostedService<MelonMQService>();
 
 var app = builder.Build();
 
+// Configure middleware
+app.UseCors();
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 // Configure HTTP endpoints
 app.Urls.Add($"http://localhost:{builder.Configuration.GetValue<int>("MelonMQ:HttpPort", 8080)}");
+
+app.MapGet("/", () => Results.Redirect("/index.html"));
+app.MapGet("/admin", () => Results.Redirect("/index.html"));
+app.MapGet("/management", () => Results.Redirect("/index.html"));
 
 app.MapGet("/health", () => new { status = "healthy", timestamp = DateTimeOffset.UtcNow });
 

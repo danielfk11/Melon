@@ -380,9 +380,6 @@ test-persistence/
 .env.test
 .env.production
 
-# Docker
-.dockerignore
-
 # OS generated files
 .DS_Store
 .DS_Store?
