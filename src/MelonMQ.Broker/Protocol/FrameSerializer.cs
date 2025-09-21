@@ -32,6 +32,26 @@ public static class FrameSerializer
         writer.Write(jsonBytes);
     }
 
+    public static async Task WriteFrameToStreamAsync(Stream stream, Frame frame)
+    {
+        var frameJson = new
+        {
+            type = frame.Type.ToString().ToUpperInvariant(),
+            corrId = frame.CorrelationId,
+            payload = frame.Payload
+        };
+
+        var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(frameJson, JsonOptions);
+        var lengthBytes = BitConverter.GetBytes(jsonBytes.Length);
+        
+        if (BitConverter.IsLittleEndian == false)
+            Array.Reverse(lengthBytes);
+
+        await stream.WriteAsync(lengthBytes);
+        await stream.WriteAsync(jsonBytes);
+        await stream.FlushAsync();
+    }
+
     public static async ValueTask<Frame?> ReadFrameAsync(PipeReader reader, CancellationToken cancellationToken = default)
     {
         // Read length prefix (4 bytes)
@@ -49,7 +69,16 @@ public static class FrameSerializer
         reader.AdvanceTo(lengthBuffer.End);
 
         if (messageLength <= 0 || messageLength > 1024 * 1024) // Max 1MB per message
+        {
+            Console.WriteLine($"[BROKER FrameSerializer] INVALID LENGTH DETECTED: {messageLength}");
+            Console.WriteLine($"[BROKER FrameSerializer] Available data in buffer: {lengthResult.Buffer.Length} bytes");
+            if (lengthResult.Buffer.Length > 4)
+            {
+                var extraBytes = lengthResult.Buffer.Slice(4, Math.Min(20, lengthResult.Buffer.Length - 4)).ToArray();
+                Console.WriteLine($"[BROKER FrameSerializer] Next 20 bytes: {string.Join(" ", extraBytes.Select(b => b.ToString("X2")))}");
+            }
             throw new InvalidDataException($"Invalid message length: {messageLength}");
+        }
 
         // Read message content
         var messageResult = await reader.ReadAtLeastAsync(messageLength, cancellationToken);
@@ -61,6 +90,7 @@ public static class FrameSerializer
         reader.AdvanceTo(messageBuffer.End);
 
         var jsonString = Encoding.UTF8.GetString(jsonBytes);
+        Console.WriteLine($"[BROKER FrameSerializer] Received JSON: {jsonString}");
         var document = JsonDocument.Parse(jsonString);
         
         var typeString = document.RootElement.GetProperty("type").GetString()!;
@@ -83,6 +113,7 @@ public static class FrameSerializer
                 MessageType.Nack => JsonSerializer.Deserialize<NackPayload>(payloadElement.GetRawText(), JsonOptions),
                 MessageType.SetPrefetch => JsonSerializer.Deserialize<SetPrefetchPayload>(payloadElement.GetRawText(), JsonOptions),
                 MessageType.Error => JsonSerializer.Deserialize<ErrorPayload>(payloadElement.GetRawText(), JsonOptions),
+                MessageType.Success => payloadElement.GetRawText(), // Success responses can be raw JSON
                 _ => null
             };
         }

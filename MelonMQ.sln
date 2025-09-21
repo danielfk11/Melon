@@ -12,6 +12,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Consumer", "samples\Consume
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MelonMQ.Tests.Integration", "tests\MelonMQ.Tests.Integration\MelonMQ.Tests.Integration.csproj", "{C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MelonMQ.StressTest", "tests\MelonMQ.StressTest\MelonMQ.StressTest.csproj", "{D4D4D4D4-D4D4-D4D4-D4D4-D4D4D4D4D4D4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -38,6 +40,10 @@ Global
 		{C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D4D4D4D4-D4D4-D4D4-D4D4-D4D4D4D4D4D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D4D4D4D4-D4D4-D4D4-D4D4-D4D4D4D4D4D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D4D4D4D4-D4D4-D4D4-D4D4-D4D4D4D4D4D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D4D4D4D4-D4D4-D4D4-D4D4-D4D4D4D4D4D4}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

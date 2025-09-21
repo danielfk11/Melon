@@ -113,21 +113,25 @@ public class OrderService
 }
 ```
 
-## 🚀 **Como Começar (1 minuto)**
+## 🚀 **Como Começar**
 
+### ⚡ **QuickStart (30 segundos)**
 ```bash
-# 1. Instalar o broker globalmente
+# Instalar e executar
 dotnet tool install -g MelonMQ.Broker
-
-# 2. Executar
 melonmq
 
-# 3. Em outro projeto .NET
-dotnet add package MelonMQ.Client
-
-# 4. Usar no código
+# Usar no código
 using var conn = await MelonConnection.ConnectAsync("melon://localhost:5672");
-// ... seu código aqui
+```
+👉 **[QUICKSTART.md](QUICKSTART.md)** - Código mínimo funcionando
+
+### 📚 **Guia Completo**
+👉 **[GETTING_STARTED.md](GETTING_STARTED.md)** - Passo a passo detalhado
+
+### 🤖 **Demo Automatizada**
+```bash
+./demo.sh  # Script que cria projeto exemplo completo
 ```
 
 ## 🏃‍♂️ **Desenvolvimento Local**

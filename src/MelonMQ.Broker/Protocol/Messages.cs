@@ -11,7 +11,8 @@ public enum MessageType
     Nack,
     SetPrefetch,
     Heartbeat,
-    Error
+    Error,
+    Success // Add success response type
 }
 
 public class Frame

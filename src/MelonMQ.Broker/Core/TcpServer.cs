@@ -70,7 +70,7 @@ public class TcpServer
                 connectionId, 
                 socket, 
                 pipe.Reader, 
-                pipe.Writer);
+                stream); // Pass stream directly instead of pipe.Writer
 
             _connectionManager.AddConnection(connection);
 
@@ -212,8 +212,7 @@ public class TcpServer
             Payload = new { success = true }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task HandleDeclareQueue(ClientConnection connection, Frame frame)
@@ -233,19 +232,34 @@ public class TcpServer
             Payload = new { success = true, queue = payload.Queue }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task HandlePublish(ClientConnection connection, Frame frame)
     {
         var payload = (PublishPayload)frame.Payload!;
+        
+        // DETECT ISSUE: If queue is empty but we got a success payload, something is wrong
+        if (string.IsNullOrEmpty(payload.Queue) && string.IsNullOrEmpty(payload.BodyBase64))
+        {
+            _logger.LogError("DETECTED LOOP: Received PublishPayload with empty Queue and BodyBase64 - this looks like a response payload being re-sent as request!");
+            _logger.LogError("Frame CorrelationId: {CorrelationId}, MessageId: {MessageId}", frame.CorrelationId, payload.MessageId);
+            return; // Don't process this malformed request
+        }
+        
+        _logger.LogInformation("HandlePublish called for queue '{QueueName}'", payload.Queue);
+        
         var queue = _queueManager.GetQueue(payload.Queue);
         
         if (queue == null)
         {
-            await SendError(connection, frame.CorrelationId, $"Queue '{payload.Queue}' does not exist");
-            return;
+            // Auto-create queue when it doesn't exist
+            _logger.LogInformation("Auto-creating queue '{QueueName}' for publish operation", payload.Queue);
+            queue = _queueManager.DeclareQueue(payload.Queue, durable: false);
+        }
+        else
+        {
+            _logger.LogInformation("Queue '{QueueName}' already exists, using existing queue", payload.Queue);
         }
 
         var body = Convert.FromBase64String(payload.BodyBase64);
@@ -264,15 +278,24 @@ public class TcpServer
 
         await queue.EnqueueAsync(message);
 
-        var response = new Frame
+        try
         {
-            Type = MessageType.Publish,
-            CorrelationId = frame.CorrelationId,
-            Payload = new { success = true, messageId = payload.MessageId }
-        };
-        
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+            var response = new Frame
+            {
+                Type = MessageType.Publish, // Keep consistent with other operations
+                CorrelationId = frame.CorrelationId,
+                Payload = new { success = true, messageId = payload.MessageId }
+            };
+            
+            _logger.LogInformation("Sending publish success response with correlationId {CorrelationId}", frame.CorrelationId);
+            await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+            _logger.LogInformation("Successfully sent publish response, now waiting for next request...");
+        }
+        catch (InvalidOperationException)
+        {
+            // Connection already closed - message was still processed successfully
+            _logger.LogDebug("Could not send publish response to connection {ConnectionId} - connection already closed", connection.Id);
+        }
     }
 
     private async Task HandleConsumeSubscribe(ClientConnection connection, Frame frame, CancellationToken cancellationToken)
@@ -321,8 +344,7 @@ public class TcpServer
                         Payload = deliverPayload
                     };
 
-                    FrameSerializer.WriteFrame(connection.Writer, deliverFrame);
-                    await connection.Writer.FlushAsync();
+                    await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, deliverFrame);
                 }
             }
             catch (OperationCanceledException)
@@ -343,8 +365,7 @@ public class TcpServer
             Payload = new { success = true, queue = payload.Queue }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task HandleAck(ClientConnection connection, Frame frame)
@@ -369,8 +390,7 @@ public class TcpServer
             Payload = new { success }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task HandleNack(ClientConnection connection, Frame frame)
@@ -394,8 +414,7 @@ public class TcpServer
             Payload = new { success }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task HandleSetPrefetch(ClientConnection connection, Frame frame)
@@ -410,8 +429,7 @@ public class TcpServer
             Payload = new { success = true, prefetch = payload.Prefetch }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task HandleHeartbeat(ClientConnection connection, Frame frame)
@@ -423,21 +441,27 @@ public class TcpServer
             Payload = new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }
         };
         
-        FrameSerializer.WriteFrame(connection.Writer, response);
-        await connection.Writer.FlushAsync();
+        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
     }
 
     private async Task SendError(ClientConnection connection, ulong correlationId, string message)
     {
-        var errorFrame = new Frame
+        try
         {
-            Type = MessageType.Error,
-            CorrelationId = correlationId,
-            Payload = new ErrorPayload { Message = message }
-        };
-        
-        FrameSerializer.WriteFrame(connection.Writer, errorFrame);
-        await connection.Writer.FlushAsync();
+            var errorFrame = new Frame
+            {
+                Type = MessageType.Error,
+                CorrelationId = correlationId,
+                Payload = new ErrorPayload { Message = message }
+            };
+            
+            await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, errorFrame);
+        }
+        catch (InvalidOperationException)
+        {
+            // Connection already closed - ignore
+            _logger.LogDebug("Could not send error to connection {ConnectionId} - connection already closed", connection.Id);
+        }
     }
 
     private async Task CleanupTask(CancellationToken cancellationToken)

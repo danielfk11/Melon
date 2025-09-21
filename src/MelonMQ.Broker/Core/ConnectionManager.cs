@@ -10,18 +10,18 @@ public class ClientConnection
     public string Id { get; }
     public Socket Socket { get; }
     public PipeReader Reader { get; }
-    public PipeWriter Writer { get; }
+    public Stream Stream { get; } // Changed from PipeWriter to Stream
     public bool IsAuthenticated { get; set; }
     public int Prefetch { get; set; } = 100;
     public ConcurrentDictionary<string, CancellationTokenSource> ActiveConsumers { get; } = new();
     public long LastHeartbeat { get; set; }
 
-    public ClientConnection(string id, Socket socket, PipeReader reader, PipeWriter writer)
+    public ClientConnection(string id, Socket socket, PipeReader reader, Stream stream)
     {
         Id = id;
         Socket = socket;
         Reader = reader;
-        Writer = writer;
+        Stream = stream; // Store stream instead of PipeWriter
         LastHeartbeat = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 }
