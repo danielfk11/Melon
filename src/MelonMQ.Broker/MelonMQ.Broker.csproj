@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+    
+    <!-- Global Tool Configuration -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>melonmq</ToolCommandName>
+    <PackageId>MelonMQ.Broker</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>MelonMQ Team</Authors>
+    <Description>High-performance message broker optimized for .NET applications</Description>
+    <PackageTags>messagequeue;broker;dotnet;csharp;messaging</PackageTags>
+    <RepositoryUrl>https://github.com/danielfk11/MelonMQ</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
