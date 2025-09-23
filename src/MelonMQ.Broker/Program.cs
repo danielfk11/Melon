@@ -1,5 +1,6 @@
 using MelonMQ.Broker.Core;
 using MelonMQ.Broker.Http;
+using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -62,15 +63,19 @@ app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionMan
         inFlightMessages = q.InFlightCount
     });
 
+    var metrics = MelonMQ.Broker.Core.MelonMetrics.Instance.GetAllMetrics();
+
     return new
     {
         queues = queues,
         connections = connectionManager.ConnectionCount,
+        metrics = metrics,
+        uptime = DateTime.UtcNow.Subtract(Process.GetCurrentProcess().StartTime.ToUniversalTime()),
         timestamp = DateTimeOffset.UtcNow
     };
 });
 
-app.MapPost("/queues/declare", async (QueueDeclareRequest request, QueueManager queueManager) =>
+app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueManager) =>
 {
     try
     {

@@ -15,6 +15,7 @@ public class MessageQueue
     private readonly string? _persistenceFilePath;
     private readonly ILogger<MessageQueue> _logger;
     private ulong _nextDeliveryTag = 1;
+    private int _pendingCount = 0;
 
     public MessageQueue(QueueConfiguration config, string? dataDirectory, ILogger<MessageQueue> logger)
     {
@@ -41,7 +42,7 @@ public class MessageQueue
 
     public string Name => _config.Name;
     public bool IsDurable => _config.Durable;
-    public int PendingCount => _messageChannel.Reader.CanCount ? _messageChannel.Reader.Count : 0;
+    public int PendingCount => _pendingCount;
     public int InFlightCount => _inFlightMessages.Count;
 
     public async Task<bool> EnqueueAsync(QueueMessage message, CancellationToken cancellationToken = default)
@@ -62,42 +63,37 @@ public class MessageQueue
         }
 
         await _writer.WriteAsync(message, cancellationToken);
+        Interlocked.Increment(ref _pendingCount);
         return true;
     }
 
     public async Task<QueueMessage?> DequeueAsync(string connectionId, CancellationToken cancellationToken = default)
     {
-        try
+        var message = await _reader.ReadAsync(cancellationToken);
+        
+        // Check TTL at delivery time
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
         {
-            var message = await _reader.ReadAsync(cancellationToken);
-            
-            // Check TTL at delivery time
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
-            {
-                _logger.LogDebug("Message {MessageId} expired at delivery", message.MessageId);
-                await HandleDeadLetter(message);
-                return await DequeueAsync(connectionId, cancellationToken); // Try next message
-            }
-
-            // Track in-flight
-            var deliveryTag = Interlocked.Increment(ref _nextDeliveryTag);
-            var inFlight = new InFlightMessage
-            {
-                Message = message,
-                DeliveryTag = deliveryTag,
-                ConnectionId = connectionId,
-                DeliveredAt = now,
-                ExpiresAt = now + 300000 // 5 minutes timeout
-            };
-
-            _inFlightMessages[deliveryTag] = inFlight;
-            return message;
+            _logger.LogDebug("Message {MessageId} expired at delivery", message.MessageId);
+            await HandleDeadLetter(message);
+            return await DequeueAsync(connectionId, cancellationToken); // Try next message
         }
-        catch (OperationCanceledException)
+
+        // Track in-flight
+        var deliveryTag = Interlocked.Increment(ref _nextDeliveryTag);
+        var inFlight = new InFlightMessage
         {
-            return null;
-        }
+            Message = message,
+            DeliveryTag = deliveryTag,
+            ConnectionId = connectionId,
+            DeliveredAt = now,
+            ExpiresAt = now + 300000 // 5 minutes timeout
+        };
+
+        _inFlightMessages[deliveryTag] = inFlight;
+        Interlocked.Decrement(ref _pendingCount);
+        return message;
     }
 
     public Task<bool> AckAsync(ulong deliveryTag)
@@ -152,23 +148,22 @@ public class MessageQueue
             toRequeue.Count, connectionId);
     }
 
-    public async Task PurgeAsync()
+    public Task PurgeAsync()
     {
-        // Clear the channel by creating a new one
-        var options = new BoundedChannelOptions(10000)
+        // Read and discard all messages from the channel
+        var count = 0;
+        while (_reader.TryRead(out _))
         {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = false,
-            SingleWriter = false
-        };
-
-        var newChannel = Channel.CreateBounded<QueueMessage>(options);
-        // Note: This is a simplified approach - in production you'd want proper coordination
-        
-        _logger.LogInformation("Purged queue {QueueName}", _config.Name);
+            Interlocked.Decrement(ref _pendingCount);
+            count++;
+        }
+        // Garante que não fique negativo
+        Interlocked.Exchange(ref _pendingCount, Math.Max(0, _pendingCount));
+        _logger.LogInformation("Purged {Count} messages from queue {QueueName}", count, _config.Name);
+        return Task.CompletedTask;
     }
 
-    private async Task HandleDeadLetter(QueueMessage message)
+    private Task HandleDeadLetter(QueueMessage message)
     {
         if (!string.IsNullOrEmpty(_config.DeadLetterQueue))
         {
@@ -176,6 +171,7 @@ public class MessageQueue
             _logger.LogWarning("Message {MessageId} should be sent to DLQ {DLQ}", 
                 message.MessageId, _config.DeadLetterQueue);
         }
+        return Task.CompletedTask;
     }
 
     private async Task PersistMessage(QueueMessage message)

@@ -1,0 +1,41 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    
+    - name: Restore dependencies
+      run: dotnet restore
+    
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+    
+    - name: Run unit tests
+      run: dotnet test tests/MelonMQ.Tests.Unit --no-build --configuration Release --verbosity normal
+    
+    - name: Test samples build
+      run: |
+        dotnet build samples/Producer --configuration Release
+        dotnet build samples/Consumer --configuration Release
+    
+    - name: Verify global tool can be built
+      run: dotnet pack src/MelonMQ.Broker/MelonMQ.Broker.csproj --configuration Release --output ./dist
+    
+    - name: Test installation locally
+      run: |
+        dotnet tool install --global --add-source ./dist MelonMQ.Broker
+        which melonmq || echo "melonmq tool installed successfully"

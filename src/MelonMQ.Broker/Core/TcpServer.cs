@@ -59,9 +59,14 @@ public class TcpServer
     {
         var connectionId = Guid.NewGuid().ToString();
         ClientConnection? connection = null;
+        var connectionStartTime = DateTime.UtcNow;
 
         try
         {
+            // Configure timeouts
+            tcpClient.ReceiveTimeout = 30000; // 30 seconds
+            tcpClient.SendTimeout = 10000;    // 10 seconds
+
             var socket = tcpClient.Client;
             var stream = tcpClient.GetStream();
             var pipe = new Pipe();
@@ -70,30 +75,67 @@ public class TcpServer
                 connectionId, 
                 socket, 
                 pipe.Reader, 
-                stream); // Pass stream directly instead of pipe.Writer
+                stream);
 
             _connectionManager.AddConnection(connection);
+            _logger.LogInformation("Client {ConnectionId} connected from {RemoteEndPoint}", 
+                connectionId, tcpClient.Client.RemoteEndPoint);
+
+            // Create linked cancellation token with timeout
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromHours(24)); // Max connection time
 
             // Start reading from network into pipe
-            var readTask = ReadFromNetworkAsync(stream, pipe.Writer, cancellationToken);
+            var readTask = ReadFromNetworkAsync(stream, pipe.Writer, timeoutCts.Token);
             
             // Start processing messages from pipe
-            var processTask = ProcessMessagesAsync(connection, cancellationToken);
+            var processTask = ProcessMessagesAsync(connection, timeoutCts.Token);
 
-            await Task.WhenAny(readTask, processTask);
+            // Wait for either task to complete or fail
+            var completedTask = await Task.WhenAny(readTask, processTask);
+            
+            // Check if the completed task failed
+            if (completedTask.IsFaulted)
+            {
+                _logger.LogWarning("Connection {ConnectionId} task failed: {Exception}", 
+                    connectionId, completedTask.Exception?.GetBaseException()?.Message);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Client {ConnectionId} connection cancelled due to server shutdown", connectionId);
+        }
+        catch (IOException ioEx)
+        {
+            _logger.LogWarning("IO error with client {ConnectionId}: {Message}", connectionId, ioEx.Message);
+        }
+        catch (ObjectDisposedException)
+        {
+            _logger.LogDebug("Client {ConnectionId} connection disposed", connectionId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling client {ConnectionId}", connectionId);
+            _logger.LogError(ex, "Unexpected error handling client {ConnectionId}", connectionId);
         }
         finally
         {
+            var connectionDuration = DateTime.UtcNow - connectionStartTime;
+            _logger.LogInformation("Client {ConnectionId} disconnected after {Duration}", 
+                connectionId, connectionDuration);
+
             if (connection != null)
             {
-                // Requeue any in-flight messages
-                foreach (var queue in _queueManager.GetAllQueues())
+                try
                 {
-                    await queue.RequeuePendingMessagesForConnection(connectionId);
+                    // Requeue any in-flight messages
+                    foreach (var queue in _queueManager.GetAllQueues())
+                    {
+                        await queue.RequeuePendingMessagesForConnection(connectionId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error requeuing messages for connection {ConnectionId}", connectionId);
                 }
 
                 _connectionManager.RemoveConnection(connectionId);

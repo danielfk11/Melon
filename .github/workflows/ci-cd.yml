@@ -1,0 +1,115 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOTNET_VERSION: '8.0'
+
+jobs:
+  test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore
+      
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+      
+    - name: Run Unit Tests
+      run: dotnet test tests/MelonMQ.Tests.Unit --no-build --configuration Release --verbosity normal
+      
+    - name: Run Integration Tests
+      run: dotnet test tests/MelonMQ.Tests.Integration --no-build --configuration Release --verbosity normal
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker image
+      run: docker build -t melonmq:${{ github.sha }} .
+      
+    - name: Test Docker image
+      run: |
+        docker run -d --name melonmq-test -p 5672:5672 -p 8080:8080 melonmq:${{ github.sha }}
+        sleep 10
+        curl -f http://localhost:8080/health
+        docker stop melonmq-test
+        docker rm melonmq-test
+
+  publish:
+    name: Publish NuGet Package
+    runs-on: ubuntu-latest
+    needs: [test, docker]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Build Client Package
+      run: dotnet pack src/MelonMQ.Client --configuration Release
+      
+    - name: Publish to NuGet
+      run: dotnet nuget push src/MelonMQ.Client/bin/Release/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
+      if: env.NUGET_API_KEY != ''
+      env:
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [test, docker]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Build Global Tool
+      run: dotnet pack src/MelonMQ.Broker --configuration Release
+      
+    - name: Create Release
+      uses: actions/create-release@v1
+      if: contains(github.event.head_commit.message, '[release]')
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.run_number }}
+        release_name: Release v${{ github.run_number }}
+        body: |
+          🍈 MelonMQ Release v${{ github.run_number }}
+          
+          ## Installation
+          ```bash
+          dotnet tool install -g MelonMQ.Broker --version ${{ github.run_number }}
+          ```
+          
+          ## Changes
+          ${{ github.event.head_commit.message }}
+        draft: false
+        prerelease: false

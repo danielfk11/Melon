@@ -10,24 +10,34 @@
 - **Protocolo eficiente**: Binary + JSON para melhor performance
 - **Zero dependências externas**: Apenas .NET 8+
 
-## 🚀 **Instalação (.NET Global Tool)**
+## 🚀 **Instalação (Open Source)**
 
+### **1. Clonar e Buildar:**
 ```bash
-# Instalar globalmente
-dotnet tool install -g MelonMQ.Broker
+# Clonar repositório
+git clone https://github.com/danielfk11/MelonMQ.git
+cd MelonMQ
+
+# Build em Release
+dotnet build --configuration Release
+
+# Instalar como global tool
+dotnet pack src/MelonMQ.Broker/MelonMQ.Broker.csproj --configuration Release --output ./dist
+dotnet tool install --global --add-source ./dist MelonMQ.Broker
 
 # Executar em qualquer lugar
 melonmq
 
 # Ou executar com configurações
-melonmq --port 5672 --http-port 8080 --data-dir ./data
+melonmq --port 5672 --http-port 8080
 ```
 
-## 📦 **Instalação do Cliente**
-
+### **2. Usar Cliente no seu projeto:**
 ```bash
 # Adicionar ao seu projeto .NET
-dotnet add package MelonMQ.Client
+dotnet add package ./dist/MelonMQ.Client.1.0.0.nupkg
+# Ou referenciar diretamente o projeto
+dotnet add reference path/to/MelonMQ/src/MelonMQ.Client/MelonMQ.Client.csproj
 ```
 
 ## 🔌 **API do Cliente C#**
@@ -117,8 +127,13 @@ public class OrderService
 
 ### ⚡ **QuickStart (30 segundos)**
 ```bash
+# Clonar e buildar
+git clone https://github.com/danielfk11/MelonMQ.git && cd MelonMQ
+dotnet build --configuration Release
+
 # Instalar e executar
-dotnet tool install -g MelonMQ.Broker
+dotnet pack src/MelonMQ.Broker/MelonMQ.Broker.csproj --configuration Release --output ./dist
+dotnet tool install --global --add-source ./dist MelonMQ.Broker
 melonmq
 
 # Usar no código
@@ -129,10 +144,8 @@ using var conn = await MelonConnection.ConnectAsync("melon://localhost:5672");
 ### 📚 **Guia Completo**
 👉 **[GETTING_STARTED.md](GETTING_STARTED.md)** - Passo a passo detalhado
 
-### 🤖 **Demo Automatizada**
-```bash
-./demo.sh  # Script que cria projeto exemplo completo
-```
+### 🏭 **Produção**
+👉 **[PRODUCTION.md](PRODUCTION.md)** - Deploy em produção, monitoramento, backup
 
 ## 🏃‍♂️ **Desenvolvimento Local**
 
@@ -145,7 +158,13 @@ cd MelonMQ
 dotnet build
 dotnet run --project src/MelonMQ.Broker
 
-# Testes samples
+# Testes
+dotnet test tests/MelonMQ.Tests.Unit
+
+# Testes de performance
+dotnet run --project tests/MelonMQ.Tests.Performance -- --simple
+
+# Testar samples
 dotnet run --project samples/Producer
 dotnet run --project samples/Consumer
 ```
