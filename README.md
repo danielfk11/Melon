@@ -22,13 +22,11 @@ dotnet tool install -g MelonMQ.Broker
 # Iniciar o broker
 melonmq
 
-# Em outro terminal, enviar uma mensagem
-curl -X POST "http://localhost:5672/api/queues/test/messages" \
-     -H "Content-Type: application/json" \
-     -d '{"message":"Hello, MelonMQ!"}'
+# Em outro terminal, verificar status
+curl http://localhost:8080/health
 
-# Consumir a mensagem
-curl -X GET "http://localhost:5672/api/queues/test/messages"
+# Ver estatísticas
+curl http://localhost:8080/stats
 ```
 
 ## 📦 Instalação
@@ -54,8 +52,10 @@ dotnet run
 ### Iniciar o Broker
 
 ```bash
-melonmq --port 5672 --persistence ./data
+melonmq
 ```
+
+O broker irá iniciar na porta TCP 5672 e HTTP 8080 por padrão.
 
 ### Configurações
 
@@ -64,12 +64,22 @@ Configure o MelonMQ através de argumentos de linha de comando ou do arquivo `ap
 ```json
 {
   "MelonMQ": {
-    "Port": 5672,
-    "HttpPort": 15672,
-    "PersistenceEnabled": true,
-    "PersistencePath": "./data",
-    "MaxMessageSizeBytes": 1048576,
-    "MessageTtlSeconds": 86400
+    "TcpPort": 5672,
+    "HttpPort": 8080,
+    "DataDirectory": "data",
+    "BatchFlushMs": 10,
+    "CompactionThresholdMB": 100,
+    "EnableAuth": false,
+    "ConnectionTimeout": 30000,
+    "HeartbeatInterval": 10000,
+    "MaxConnections": 1000,
+    "MaxMessageSize": 1048576,
+    "Security": {
+      "RequireAuth": false,
+      "JwtSecret": "",
+      "JwtExpirationMinutes": 60,
+      "AllowedOrigins": []
+    }
   }
 }
 ```
@@ -88,14 +98,16 @@ dotnet add package MelonMQ.Client
 using MelonMQ.Client;
 
 // Conectar ao broker
-var connection = await MelonConnection.CreateAsync("localhost", 5672);
-var channel = await connection.CreateChannelAsync();
+using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
+using var channel = await connection.CreateChannelAsync();
+
+// Declarar fila
+await channel.DeclareQueueAsync("test-queue", durable: true);
 
 // Enviar mensagem
-await channel.PublishAsync("test-queue", "Hello, MelonMQ!");
-
-// Fechar conexão
-await connection.CloseAsync();
+var message = "Hello, MelonMQ!";
+var body = System.Text.Encoding.UTF8.GetBytes(message);
+await channel.PublishAsync("test-queue", body, persistent: true, ttlMs: 60000);
 ```
 
 ### Exemplo de Consumidor
@@ -104,17 +116,23 @@ await connection.CloseAsync();
 using MelonMQ.Client;
 
 // Conectar ao broker
-var connection = await MelonConnection.CreateAsync("localhost", 5672);
-var channel = await connection.CreateChannelAsync();
+using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
+using var channel = await connection.CreateChannelAsync();
+
+// Declarar fila
+await channel.DeclareQueueAsync("test-queue", durable: true);
 
 // Consumir mensagens
-await channel.ConsumeAsync("test-queue", async (message) => {
-    Console.WriteLine($"Mensagem recebida: {message}");
+await foreach (var message in channel.ConsumeAsync("test-queue", prefetch: 50))
+{
+    var body = System.Text.Encoding.UTF8.GetString(message.Body.Span);
+    Console.WriteLine($"Mensagem recebida: {body}");
+    
     await Task.Delay(100); // Processar mensagem
-    return true; // Confirmar processamento
-});
-
-// A conexão permanece aberta enquanto o consumidor estiver ativo
+    
+    // Confirmar processamento
+    await channel.AckAsync(message.DeliveryTag);
+}
 ```
 
 ## 📊 Comparação com RabbitMQ
@@ -133,12 +151,27 @@ await channel.ConsumeAsync("test-queue", async (message) => {
 
 O MelonMQ expõe uma API HTTP para operações e monitoramento:
 
-- **GET /api/queues** - Lista todas as filas
-- **GET /api/queues/{name}** - Obtém informações sobre uma fila
-- **POST /api/queues/{name}/messages** - Publica uma mensagem
-- **GET /api/queues/{name}/messages** - Consome uma mensagem
-- **DELETE /api/queues/{name}/messages** - Limpa todas as mensagens da fila
-- **GET /api/stats** - Estatísticas do broker
+- **GET /health** - Verifica o status do broker
+- **GET /stats** - Estatísticas do broker (filas, conexões, métricas)
+- **POST /queues/declare** - Declara uma nova fila
+- **POST /queues/{queueName}/purge** - Limpa todas as mensagens de uma fila
+
+Exemplo:
+```bash
+# Verificar saúde do broker
+curl http://localhost:8080/health
+
+# Ver estatísticas
+curl http://localhost:8080/stats
+
+# Declarar uma fila
+curl -X POST http://localhost:8080/queues/declare \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-queue","durable":true}'
+
+# Limpar fila
+curl -X POST http://localhost:8080/queues/my-queue/purge
+```
 
 ## 🧪 Testes
 

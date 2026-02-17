@@ -21,6 +21,8 @@ public class MessageQueue
     private readonly long _compactionThresholdBytes;
     private ulong _nextDeliveryTag = 1;
     private int _pendingCount = 0;
+    private long _lastActivityAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    private long _createdAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     public MessageQueue(QueueConfiguration config, string? dataDirectory, ILogger<MessageQueue> logger, Func<string, MessageQueue?>? queueResolver = null, int channelCapacity = 10000, long compactionThresholdMB = 100)
     {
@@ -55,6 +57,23 @@ public class MessageQueue
     public bool IsDurable => _config.Durable;
     public int PendingCount => _pendingCount;
     public int InFlightCount => _inFlightMessages.Count;
+    public long LastActivityAt => _lastActivityAt;
+    public long CreatedAt => _createdAt;
+
+    /// <summary>
+    /// Returns true if the queue has no pending or in-flight messages.
+    /// </summary>
+    public bool IsEmpty => PendingCount == 0 && InFlightCount == 0;
+
+    /// <summary>
+    /// Returns the duration in milliseconds since last activity.
+    /// </summary>
+    public long IdleTimeMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastActivityAt;
+
+    private void TouchActivity()
+    {
+        Interlocked.Exchange(ref _lastActivityAt, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
 
     public async Task<bool> EnqueueAsync(QueueMessage message, CancellationToken cancellationToken = default)
     {
@@ -75,6 +94,7 @@ public class MessageQueue
 
         await _writer.WriteAsync(message, cancellationToken);
         Interlocked.Increment(ref _pendingCount);
+        TouchActivity();
         return true;
     }
 
@@ -107,6 +127,7 @@ public class MessageQueue
 
             _inFlightMessages[deliveryTag] = inFlight;
             Interlocked.Decrement(ref _pendingCount);
+            TouchActivity();
             return message;
         }
 

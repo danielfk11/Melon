@@ -49,6 +49,7 @@ builder.Services.AddSingleton<TcpServer>(provider =>
 });
 
 builder.Services.AddHostedService<MelonMQService>();
+builder.Services.AddHostedService<QueueGarbageCollector>();
 
 var app = builder.Build();
 
@@ -78,6 +79,20 @@ app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager)
     });
 });
 
+app.MapGet("/queues", (QueueManager queueManager) =>
+{
+    var queues = queueManager.GetAllQueues().Select(q => new
+    {
+        name = q.Name,
+        durable = q.IsDurable,
+        pendingMessages = q.PendingCount,
+        inFlightMessages = q.InFlightCount,
+        idleTimeMs = q.IdleTimeMs
+    });
+
+    return Results.Ok(new { queues = queues });
+});
+
 app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionManager) =>
 {
     var queues = queueManager.GetAllQueues().Select(q => new
@@ -85,7 +100,8 @@ app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionMan
         name = q.Name,
         durable = q.IsDurable,
         pendingMessages = q.PendingCount,
-        inFlightMessages = q.InFlightCount
+        inFlightMessages = q.InFlightCount,
+        idleTimeMs = q.IdleTimeMs
     });
 
     var metrics = MelonMQ.Broker.Core.MelonMetrics.Instance.GetAllMetrics();
@@ -94,6 +110,7 @@ app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionMan
     {
         queues = queues,
         connections = connectionManager.ConnectionCount,
+        totalQueues = queueManager.QueueCount,
         metrics = metrics,
         uptime = DateTime.UtcNow.Subtract(Process.GetCurrentProcess().StartTime.ToUniversalTime()),
         timestamp = DateTimeOffset.UtcNow
@@ -109,6 +126,13 @@ app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueM
             request.Durable, 
             request.DeadLetterQueue, 
             request.DefaultTtlMs);
+
+        // Enforce max queues limit
+        if (melonConfig.QueueGC.MaxQueues > 0 && queueManager.QueueCount > melonConfig.QueueGC.MaxQueues)
+        {
+            queueManager.DeleteQueue(request.Name);
+            return Results.BadRequest(new { error = $"Maximum queue limit ({melonConfig.QueueGC.MaxQueues}) reached. Delete unused queues first." });
+        }
 
         return Results.Ok(new { success = true, queue = request.Name });
     }
@@ -137,8 +161,136 @@ app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager q
     }
 });
 
+app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishRequest request, QueueManager queueManager) =>
+{
+    var queue = queueManager.GetQueue(queueName);
+    if (queue == null)
+    {
+        return Results.NotFound(new { error = $"Queue '{queueName}' not found" });
+    }
+
+    try
+    {
+        var body = System.Text.Encoding.UTF8.GetBytes(request.Message);
+        var message = new QueueMessage
+        {
+            MessageId = request.MessageId ?? Guid.NewGuid(),
+            Body = new ReadOnlyMemory<byte>(body),
+            Persistent = request.Persistent,
+            ExpiresAt = request.TtlMs.HasValue 
+                ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + request.TtlMs.Value 
+                : null
+        };
+
+        var enqueued = await queue.EnqueueAsync(message);
+        return Results.Ok(new { success = enqueued, messageId = message.MessageId });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager queueManager) =>
+{
+    var queue = queueManager.GetQueue(queueName);
+    if (queue == null)
+    {
+        return Results.NotFound(new { error = $"Queue '{queueName}' not found" });
+    }
+
+    try
+    {
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // 5 second timeout
+        var message = await queue.DequeueAsync("http-client", cts.Token);
+        
+        if (message == null)
+        {
+            return Results.Ok(new { message = (string?)null });
+        }
+
+        var bodyString = System.Text.Encoding.UTF8.GetString(message.Body.Span);
+        return Results.Ok(new 
+        { 
+            messageId = message.MessageId,
+            message = bodyString,
+            redelivered = message.Redelivered
+        });
+    }
+    catch (OperationCanceledException)
+    {
+        return Results.Ok(new { message = (string?)null }); // No messages available
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation("MelonMQ Broker starting...");
+
+// Queue deletion endpoint
+app.MapDelete("/queues/{queueName}", (string queueName, QueueManager queueManager) =>
+{
+    var deleted = queueManager.DeleteQueue(queueName);
+    if (!deleted)
+    {
+        return Results.NotFound(new { error = $"Queue '{queueName}' not found" });
+    }
+    return Results.Ok(new { success = true, queue = queueName, message = $"Queue '{queueName}' deleted" });
+});
+
+// List inactive queues eligible for cleanup
+app.MapGet("/queues/inactive", (QueueManager queueManager) =>
+{
+    var threshold = melonConfig.QueueGC.InactiveThresholdSeconds;
+    var inactiveQueues = queueManager.GetInactiveQueues(threshold)
+        .Select(q => new
+        {
+            name = q.Name,
+            durable = q.Durable,
+            idleTimeSeconds = q.IdleTimeMs / 1000.0
+        });
+
+    return Results.Ok(new
+    {
+        thresholdSeconds = threshold,
+        count = inactiveQueues.Count(),
+        queues = inactiveQueues
+    });
+});
+
+// Force GC run manually
+app.MapPost("/queues/gc", (QueueManager queueManager) =>
+{
+    var removed = queueManager.CleanupInactiveQueues(
+        melonConfig.QueueGC.InactiveThresholdSeconds,
+        melonConfig.QueueGC.OnlyNonDurable);
+
+    return Results.Ok(new
+    {
+        success = true,
+        removedQueues = removed,
+        remainingQueues = queueManager.QueueCount
+    });
+});
+
+// GC configuration status
+app.MapGet("/queues/gc/status", (QueueManager queueManager) =>
+{
+    return Results.Ok(new
+    {
+        enabled = melonConfig.QueueGC.Enabled,
+        intervalSeconds = melonConfig.QueueGC.IntervalSeconds,
+        inactiveThresholdSeconds = melonConfig.QueueGC.InactiveThresholdSeconds,
+        onlyNonDurable = melonConfig.QueueGC.OnlyNonDurable,
+        maxQueues = melonConfig.QueueGC.MaxQueues == 0 ? "unlimited" : (object)melonConfig.QueueGC.MaxQueues,
+        totalQueues = queueManager.QueueCount,
+        gcRuns = MelonMQ.Broker.Core.MelonMetrics.Instance.GetCounter("gc.runs"),
+        totalQueuesRemoved = MelonMQ.Broker.Core.MelonMetrics.Instance.GetCounter("gc.queues_removed")
+    });
+});
 
 app.Run();
 
@@ -147,3 +299,9 @@ public record QueueDeclareRequest(
     bool Durable = false, 
     string? DeadLetterQueue = null, 
     int? DefaultTtlMs = null);
+
+public record PublishRequest(
+    string Message,
+    bool Persistent = false,
+    int? TtlMs = null,
+    Guid? MessageId = null);

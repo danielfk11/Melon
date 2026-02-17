@@ -42,11 +42,6 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         _ = Task.Run(HeartbeatTask);
     }
 
-    public static async Task<MelonConnection> ConnectAsync(string connectionString, CancellationToken cancellationToken = default)
-    {
-        return await ConnectAsync(connectionString, null, cancellationToken);
-    }
-
     public static async Task<MelonConnection> ConnectAsync(string connectionString, MelonConnectionOptions? options = null, CancellationToken cancellationToken = default)
     {
         var uri = new Uri(connectionString);

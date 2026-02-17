@@ -15,7 +15,7 @@ public class SimpleIntegrationTests
         
         try
         {
-            using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
+            using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672", null);
             using var channel = await connection.CreateChannelAsync();
 
             // Test basic operations

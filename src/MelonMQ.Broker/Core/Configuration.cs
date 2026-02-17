@@ -14,6 +14,37 @@ public class MelonMQConfiguration
     public int MaxConnections { get; set; } = 1000;
     public int MaxMessageSize { get; set; } = 1048576; // 1MB
     public SecurityConfiguration Security { get; set; } = new();
+    public QueueGarbageCollectionConfiguration QueueGC { get; set; } = new();
+}
+
+public class QueueGarbageCollectionConfiguration
+{
+    /// <summary>
+    /// Enable automatic cleanup of inactive empty queues.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// How often (in seconds) the GC runs to check for inactive queues.
+    /// </summary>
+    public int IntervalSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Time in seconds a queue must be empty and idle before being deleted.
+    /// </summary>
+    public int InactiveThresholdSeconds { get; set; } = 300; // 5 minutes
+
+    /// <summary>
+    /// If true, only non-durable queues are eligible for auto-delete.
+    /// If false, all empty inactive queues (including durable) are deleted.
+    /// </summary>
+    public bool OnlyNonDurable { get; set; } = false;
+
+    /// <summary>
+    /// Maximum number of queues allowed. New declarations are rejected after this limit.
+    /// 0 = unlimited.
+    /// </summary>
+    public int MaxQueues { get; set; } = 0;
 }
 
 public class SecurityConfiguration

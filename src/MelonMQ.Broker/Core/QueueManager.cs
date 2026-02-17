@@ -27,6 +27,8 @@ public class QueueManager : IQueueManager
         }
     }
 
+    public int QueueCount => _queues.Count;
+
     public MessageQueue DeclareQueue(string name, bool durable = false, string? deadLetterQueue = null, int? defaultTtlMs = null)
     {
         return _queues.GetOrAdd(name, _ =>
@@ -76,5 +78,55 @@ public class QueueManager : IQueueManager
     {
         var tasks = _queues.Values.Select(q => q.CleanupExpiredInFlightMessages());
         await Task.WhenAll(tasks);
+    }
+
+    /// <summary>
+    /// Removes empty queues that have been idle for longer than the specified threshold.
+    /// </summary>
+    public int CleanupInactiveQueues(int inactiveThresholdSeconds, bool onlyNonDurable = false)
+    {
+        var thresholdMs = (long)inactiveThresholdSeconds * 1000;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var removedCount = 0;
+
+        var candidates = _queues.Values
+            .Where(q => q.IsEmpty && (now - q.LastActivityAt) > thresholdMs)
+            .Where(q => !onlyNonDurable || !q.IsDurable)
+            .Select(q => q.Name)
+            .ToList();
+
+        foreach (var queueName in candidates)
+        {
+            if (_queues.TryRemove(queueName, out var queue))
+            {
+                var idleMinutes = (now - queue.LastActivityAt) / 60000.0;
+                _logger.LogInformation(
+                    "GC: Deleted inactive queue '{QueueName}' (idle for {IdleMinutes:F1} minutes, durable: {Durable})",
+                    queueName, idleMinutes, queue.IsDurable);
+                removedCount++;
+            }
+        }
+
+        if (removedCount > 0)
+        {
+            _logger.LogInformation("GC: Cleaned up {Count} inactive queues. Remaining: {Remaining}", 
+                removedCount, _queues.Count);
+        }
+
+        return removedCount;
+    }
+
+    /// <summary>
+    /// Returns queues that are empty and have been idle for the specified threshold.
+    /// </summary>
+    public IEnumerable<(string Name, bool Durable, long IdleTimeMs)> GetInactiveQueues(int inactiveThresholdSeconds)
+    {
+        var thresholdMs = (long)inactiveThresholdSeconds * 1000;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        return _queues.Values
+            .Where(q => q.IsEmpty && (now - q.LastActivityAt) > thresholdMs)
+            .Select(q => (q.Name, q.IsDurable, q.IdleTimeMs))
+            .OrderByDescending(q => q.IdleTimeMs);
     }
 }
