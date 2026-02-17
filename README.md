@@ -298,7 +298,6 @@ dotnet test
 - [x] TTL de mensagens
 - [x] Queue Garbage Collector
 - [x] Interface web de administração
-- [x] Exemplos Node.js (produtor e consumidor)
 - [ ] Autenticação JWT
 - [ ] Métricas avançadas (Prometheus/OpenTelemetry)
 - [ ] Clustering
