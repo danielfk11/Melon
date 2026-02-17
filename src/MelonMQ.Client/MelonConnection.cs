@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using MelonMQ.Client.Protocol;
+using MelonMQ.Protocol;
 
 namespace MelonMQ.Client;
 
@@ -43,21 +44,23 @@ public class MelonConnection : IDisposable, IAsyncDisposable
 
     public static async Task<MelonConnection> ConnectAsync(string connectionString, CancellationToken cancellationToken = default)
     {
+        return await ConnectAsync(connectionString, null, cancellationToken);
+    }
+
+    public static async Task<MelonConnection> ConnectAsync(string connectionString, MelonConnectionOptions? options = null, CancellationToken cancellationToken = default)
+    {
         var uri = new Uri(connectionString);
         var host = uri.Host;
         var port = uri.Port > 0 ? uri.Port : 5672;
 
-        var tcpClient = new TcpClient();
-        await tcpClient.ConnectAsync(host, port, cancellationToken);
+        var retryPolicy = options?.RetryPolicy;
+        var tcpClient = await ConnectionHelper.ConnectWithRetryAsync(host, port, retryPolicy, cancellationToken);
         
         var stream = tcpClient.GetStream();
         var incomingPipe = new Pipe(); // For data from server to client
         var outgoingPipe = new Pipe(); // For data from client to server
         
         var connection = new MelonConnection(tcpClient, stream, incomingPipe.Reader, outgoingPipe.Writer, outgoingPipe.Reader, incomingPipe.Writer);
-        
-        // Give pipes time to initialize properly
-        await Task.Delay(100, cancellationToken);
         
         return connection;
     }
@@ -170,50 +173,31 @@ public class MelonConnection : IDisposable, IAsyncDisposable
 
     private async Task ProcessIncomingFrames()
     {
-        Console.WriteLine("[CLIENT] ProcessIncomingFrames started");
         try
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested && !_disposed)
             {
-                Console.WriteLine("[CLIENT] Waiting for frame...");
                 var frame = await FrameSerializer.ReadFrameAsync(_incomingReader, _cancellationTokenSource.Token);
                 if (frame == null)
-                {
-                    Console.WriteLine("[CLIENT] Frame is null, breaking");
                     break;
-                }
-
-                Console.WriteLine($"[CLIENT] Received frame type: {frame.Type}, correlationId: {frame.CorrelationId}");
 
                 if (_pendingRequests.TryRemove(frame.CorrelationId, out var tcs))
                 {
-                    Console.WriteLine($"[CLIENT] Completing pending request for correlationId: {frame.CorrelationId}");
                     tcs.SetResult(frame);
                 }
                 else if (frame.Type == MessageType.Deliver)
                 {
-                    Console.WriteLine("[CLIENT] Handling delivery");
-                    // Handle incoming delivery
                     await HandleDelivery(frame);
-                }
-                else
-                {
-                    Console.WriteLine($"[CLIENT] No handler for frame type: {frame.Type}, correlationId: {frame.CorrelationId}");
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[CLIENT] Error in ProcessIncomingFrames: {ex.Message}");
             // Connection error - complete all pending requests
             foreach (var tcs in _pendingRequests.Values)
             {
-                tcs.TrySetException(new InvalidOperationException("Connection lost"));
+                tcs.TrySetException(new InvalidOperationException($"Connection lost: {ex.Message}"));
             }
-        }
-        finally
-        {
-            Console.WriteLine("[CLIENT] ProcessIncomingFrames ended");
         }
     }
 

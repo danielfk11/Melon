@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
 using System.Text.Json;
+using MelonMQ.Protocol;
 
 namespace MelonMQ.Broker.Protocol;
 
@@ -70,13 +71,6 @@ public static class FrameSerializer
 
         if (messageLength <= 0 || messageLength > 1024 * 1024) // Max 1MB per message
         {
-            Console.WriteLine($"[BROKER FrameSerializer] INVALID LENGTH DETECTED: {messageLength}");
-            Console.WriteLine($"[BROKER FrameSerializer] Available data in buffer: {lengthResult.Buffer.Length} bytes");
-            if (lengthResult.Buffer.Length > 4)
-            {
-                var extraBytes = lengthResult.Buffer.Slice(4, Math.Min(20, lengthResult.Buffer.Length - 4)).ToArray();
-                Console.WriteLine($"[BROKER FrameSerializer] Next 20 bytes: {string.Join(" ", extraBytes.Select(b => b.ToString("X2")))}");
-            }
             throw new InvalidDataException($"Invalid message length: {messageLength}");
         }
 
@@ -89,9 +83,7 @@ public static class FrameSerializer
         var jsonBytes = messageBuffer.ToArray();
         reader.AdvanceTo(messageBuffer.End);
 
-        var jsonString = Encoding.UTF8.GetString(jsonBytes);
-        Console.WriteLine($"[BROKER FrameSerializer] Received JSON: {jsonString}");
-        var document = JsonDocument.Parse(jsonString);
+        var document = JsonDocument.Parse(jsonBytes);
         
         var typeString = document.RootElement.GetProperty("type").GetString()!;
         var corrId = document.RootElement.GetProperty("corrId").GetUInt64();

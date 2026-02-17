@@ -26,7 +26,7 @@ public class ClientConnection
     }
 }
 
-public class ConnectionManager
+public class ConnectionManager : IConnectionManager
 {
     private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
     private readonly ILogger<ConnectionManager> _logger;

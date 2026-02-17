@@ -7,6 +7,7 @@ public class MelonMQConfiguration
     public string DataDirectory { get; set; } = "data";
     public int BatchFlushMs { get; set; } = 10;
     public int CompactionThresholdMB { get; set; } = 100;
+    public int ChannelCapacity { get; set; } = 10000;
     public bool EnableAuth { get; set; } = false;
     public int ConnectionTimeout { get; set; } = 30000;
     public int HeartbeatInterval { get; set; } = 10000;

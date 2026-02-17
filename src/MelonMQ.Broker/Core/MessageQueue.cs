@@ -14,15 +14,22 @@ public class MessageQueue
     private readonly ConcurrentDictionary<ulong, InFlightMessage> _inFlightMessages = new();
     private readonly string? _persistenceFilePath;
     private readonly ILogger<MessageQueue> _logger;
+    private readonly Func<string, MessageQueue?>? _queueResolver;
+    private readonly ConcurrentDictionary<Guid, bool> _ackedMessageIds = new();
+    private readonly SemaphoreSlim _persistenceLock = new(1, 1);
+    private long _persistenceFileSize = 0;
+    private readonly long _compactionThresholdBytes;
     private ulong _nextDeliveryTag = 1;
     private int _pendingCount = 0;
 
-    public MessageQueue(QueueConfiguration config, string? dataDirectory, ILogger<MessageQueue> logger)
+    public MessageQueue(QueueConfiguration config, string? dataDirectory, ILogger<MessageQueue> logger, Func<string, MessageQueue?>? queueResolver = null, int channelCapacity = 10000, long compactionThresholdMB = 100)
     {
         _config = config;
         _logger = logger;
+        _queueResolver = queueResolver;
+        _compactionThresholdBytes = compactionThresholdMB * 1024 * 1024;
         
-        var options = new BoundedChannelOptions(10000)
+        var options = new BoundedChannelOptions(channelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = false,
@@ -36,6 +43,10 @@ public class MessageQueue
         if (_config.Durable && !string.IsNullOrEmpty(dataDirectory))
         {
             _persistenceFilePath = Path.Combine(dataDirectory, $"{_config.Name}.log");
+            if (File.Exists(_persistenceFilePath))
+            {
+                _persistenceFileSize = new FileInfo(_persistenceFilePath).Length;
+            }
             _ = Task.Run(LoadPersistedMessages);
         }
     }
@@ -69,37 +80,49 @@ public class MessageQueue
 
     public async Task<QueueMessage?> DequeueAsync(string connectionId, CancellationToken cancellationToken = default)
     {
-        var message = await _reader.ReadAsync(cancellationToken);
-        
-        // Check TTL at delivery time
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogDebug("Message {MessageId} expired at delivery", message.MessageId);
-            await HandleDeadLetter(message);
-            return await DequeueAsync(connectionId, cancellationToken); // Try next message
+            var message = await _reader.ReadAsync(cancellationToken);
+            
+            // Check TTL at delivery time
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
+            {
+                _logger.LogDebug("Message {MessageId} expired at delivery", message.MessageId);
+                await HandleDeadLetter(message);
+                Interlocked.Decrement(ref _pendingCount);
+                continue; // Try next message instead of recursion
+            }
+
+            // Track in-flight
+            var deliveryTag = Interlocked.Increment(ref _nextDeliveryTag);
+            var inFlight = new InFlightMessage
+            {
+                Message = message,
+                DeliveryTag = deliveryTag,
+                ConnectionId = connectionId,
+                DeliveredAt = now,
+                ExpiresAt = now + 300000 // 5 minutes timeout
+            };
+
+            _inFlightMessages[deliveryTag] = inFlight;
+            Interlocked.Decrement(ref _pendingCount);
+            return message;
         }
 
-        // Track in-flight
-        var deliveryTag = Interlocked.Increment(ref _nextDeliveryTag);
-        var inFlight = new InFlightMessage
-        {
-            Message = message,
-            DeliveryTag = deliveryTag,
-            ConnectionId = connectionId,
-            DeliveredAt = now,
-            ExpiresAt = now + 300000 // 5 minutes timeout
-        };
-
-        _inFlightMessages[deliveryTag] = inFlight;
-        Interlocked.Decrement(ref _pendingCount);
-        return message;
+        return null;
     }
 
     public Task<bool> AckAsync(ulong deliveryTag)
     {
         if (_inFlightMessages.TryRemove(deliveryTag, out var inFlight))
         {
+            // Track acked message for persistence compaction
+            if (_config.Durable)
+            {
+                _ackedMessageIds[inFlight.Message.MessageId] = true;
+            }
+
             _logger.LogDebug("Acked message {MessageId} with delivery tag {DeliveryTag}", 
                 inFlight.Message.MessageId, deliveryTag);
             return Task.FromResult(true);
@@ -107,7 +130,7 @@ public class MessageQueue
         return Task.FromResult(false);
     }
 
-    public Task<bool> NackAsync(ulong deliveryTag, bool requeue = true)
+    public async Task<bool> NackAsync(ulong deliveryTag, bool requeue = true)
     {
         if (_inFlightMessages.TryRemove(deliveryTag, out var inFlight))
         {
@@ -115,17 +138,25 @@ public class MessageQueue
             {
                 inFlight.Message.Redelivered = true;
                 inFlight.Message.DeliveryCount++;
-                _ = Task.Run(() => EnqueueAsync(inFlight.Message));
-                _logger.LogDebug("Requeued message {MessageId}", inFlight.Message.MessageId);
+                try
+                {
+                    await EnqueueAsync(inFlight.Message);
+                    _logger.LogDebug("Requeued message {MessageId}", inFlight.Message.MessageId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to requeue message {MessageId}, sending to DLQ", inFlight.Message.MessageId);
+                    await HandleDeadLetter(inFlight.Message);
+                }
             }
             else
             {
-                _ = Task.Run(() => HandleDeadLetter(inFlight.Message));
+                await HandleDeadLetter(inFlight.Message);
                 _logger.LogDebug("Dead-lettered message {MessageId}", inFlight.Message.MessageId);
             }
-            return Task.FromResult(true);
+            return true;
         }
-        return Task.FromResult(false);
+        return false;
     }
 
     public async Task RequeuePendingMessagesForConnection(string connectionId)
@@ -163,15 +194,33 @@ public class MessageQueue
         return Task.CompletedTask;
     }
 
-    private Task HandleDeadLetter(QueueMessage message)
+    private async Task HandleDeadLetter(QueueMessage message)
     {
-        if (!string.IsNullOrEmpty(_config.DeadLetterQueue))
+        if (!string.IsNullOrEmpty(_config.DeadLetterQueue) && _queueResolver != null)
         {
-            // In a real implementation, you'd send to the DLQ queue
-            _logger.LogWarning("Message {MessageId} should be sent to DLQ {DLQ}", 
-                message.MessageId, _config.DeadLetterQueue);
+            var dlq = _queueResolver(_config.DeadLetterQueue);
+            if (dlq != null)
+            {
+                message.Redelivered = true;
+                await dlq.EnqueueAsync(message);
+                _logger.LogInformation("Message {MessageId} sent to DLQ {DLQ}", 
+                    message.MessageId, _config.DeadLetterQueue);
+                return;
+            }
+            
+            _logger.LogWarning("DLQ '{DLQ}' not found for message {MessageId}. Message discarded.", 
+                _config.DeadLetterQueue, message.MessageId);
         }
-        return Task.CompletedTask;
+        else if (!string.IsNullOrEmpty(_config.DeadLetterQueue))
+        {
+            _logger.LogWarning("DLQ '{DLQ}' configured but queue resolver not available. Message {MessageId} discarded.", 
+                _config.DeadLetterQueue, message.MessageId);
+        }
+        else
+        {
+            _logger.LogDebug("No DLQ configured for queue {QueueName}. Message {MessageId} discarded.", 
+                _config.Name, message.MessageId);
+        }
     }
 
     private async Task PersistMessage(QueueMessage message)
@@ -187,7 +236,94 @@ public class MessageQueue
         };
 
         var line = JsonSerializer.Serialize(record) + Environment.NewLine;
-        await File.AppendAllTextAsync(_persistenceFilePath, line);
+        
+        await _persistenceLock.WaitAsync();
+        try
+        {
+            await File.AppendAllTextAsync(_persistenceFilePath, line);
+            _persistenceFileSize += Encoding.UTF8.GetByteCount(line);
+            
+            // Trigger compaction if file exceeds threshold
+            if (_persistenceFileSize > _compactionThresholdBytes)
+            {
+                await CompactPersistenceLogAsync();
+            }
+        }
+        finally
+        {
+            _persistenceLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Compacts the persistence log by removing acked and expired messages.
+    /// Only retains messages that are still pending or in-flight.
+    /// </summary>
+    public async Task CompactPersistenceLogAsync()
+    {
+        if (_persistenceFilePath == null) return;
+
+        try
+        {
+            _logger.LogInformation("Starting persistence compaction for queue {QueueName}", _config.Name);
+            
+            var lines = await File.ReadAllLinesAsync(_persistenceFilePath);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var survivingLines = new List<string>();
+            var removedCount = 0;
+
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                try
+                {
+                    var record = JsonSerializer.Deserialize<JsonElement>(line);
+                    var msgId = Guid.Parse(record.GetProperty("msgId").GetString()!);
+                    
+                    // Skip acked messages
+                    if (_ackedMessageIds.ContainsKey(msgId))
+                    {
+                        removedCount++;
+                        continue;
+                    }
+
+                    // Skip expired messages
+                    if (record.TryGetProperty("expiresAt", out var exp) && 
+                        exp.ValueKind != JsonValueKind.Null &&
+                        exp.GetInt64() <= now)
+                    {
+                        removedCount++;
+                        continue;
+                    }
+
+                    survivingLines.Add(line);
+                }
+                catch
+                {
+                    // Skip corrupted lines
+                    removedCount++;
+                }
+            }
+
+            // Write compacted file atomically
+            var tempPath = _persistenceFilePath + ".tmp";
+            await File.WriteAllLinesAsync(tempPath, survivingLines);
+            File.Move(tempPath, _persistenceFilePath, overwrite: true);
+
+            // Clear acked IDs that were just compacted
+            _ackedMessageIds.Clear();
+            
+            // Update tracked file size
+            _persistenceFileSize = new FileInfo(_persistenceFilePath).Length;
+
+            _logger.LogInformation("Compacted persistence log for queue {QueueName}: removed {Removed} entries, {Remaining} remaining", 
+                _config.Name, removedCount, survivingLines.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error compacting persistence log for queue {QueueName}", _config.Name);
+        }
     }
 
     private async Task LoadPersistedMessages()

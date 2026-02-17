@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("High-performance message broker optimized for .NET applications")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c70aeed869b5929d87bb1e89f7a1f8f533ef102d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+34451280b54933bbe1872f43b64fa9e79f19eb7f")]
 [assembly: System.Reflection.AssemblyProductAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MelonMQ.Broker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

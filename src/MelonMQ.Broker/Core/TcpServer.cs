@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using MelonMQ.Broker.Protocol;
+using MelonMQ.Protocol;
 
 namespace MelonMQ.Broker.Core;
 
@@ -10,26 +12,30 @@ public class TcpServer
     private readonly QueueManager _queueManager;
     private readonly ConnectionManager _connectionManager;
     private readonly ILogger<TcpServer> _logger;
-    private readonly int _port;
+    private readonly MelonMQConfiguration _config;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
+    private readonly ConcurrentDictionary<ulong, string> _deliveryTagToQueue = new();
     private long _nextDeliveryTag = 0;
 
-    public TcpServer(QueueManager queueManager, ConnectionManager connectionManager, int port, ILogger<TcpServer> logger)
+    public bool IsListening { get; private set; }
+
+    public TcpServer(QueueManager queueManager, ConnectionManager connectionManager, MelonMQConfiguration config, ILogger<TcpServer> logger)
     {
         _queueManager = queueManager;
         _connectionManager = connectionManager;
-        _port = port;
+        _config = config;
         _logger = logger;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _listener = new TcpListener(IPAddress.Any, _port);
+        _listener = new TcpListener(IPAddress.Any, _config.TcpPort);
         _listener.Start();
+        IsListening = true;
 
-        _logger.LogInformation("TCP Server started on port {Port}", _port);
+        _logger.LogInformation("TCP Server started on port {Port}", _config.TcpPort);
 
         // Start cleanup task
         _ = Task.Run(() => CleanupTask(_cancellationTokenSource.Token));
@@ -39,6 +45,15 @@ public class TcpServer
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
                 var tcpClient = await _listener.AcceptTcpClientAsync();
+                
+                // Enforce max connections
+                if (_connectionManager.ConnectionCount >= _config.MaxConnections)
+                {
+                    _logger.LogWarning("Max connections ({MaxConnections}) reached, rejecting new connection", _config.MaxConnections);
+                    tcpClient.Close();
+                    continue;
+                }
+                
                 _ = Task.Run(() => HandleClientAsync(tcpClient, _cancellationTokenSource.Token));
             }
         }
@@ -52,6 +67,7 @@ public class TcpServer
     {
         _cancellationTokenSource?.Cancel();
         _listener?.Stop();
+        IsListening = false;
         _logger.LogInformation("TCP Server stopped");
     }
 
@@ -195,12 +211,29 @@ public class TcpServer
     {
         try
         {
+            // Auth frames are always allowed
+            if (frame.Type == MessageType.Auth)
+            {
+                await HandleAuth(connection, frame);
+                return;
+            }
+
+            // Heartbeat frames are always allowed
+            if (frame.Type == MessageType.Heartbeat)
+            {
+                await HandleHeartbeat(connection, frame);
+                return;
+            }
+
+            // Require authentication if configured
+            if (_config.Security.RequireAuth && !connection.IsAuthenticated)
+            {
+                await SendError(connection, frame.CorrelationId, "Authentication required. Send Auth frame first.");
+                return;
+            }
+
             switch (frame.Type)
             {
-                case MessageType.Auth:
-                    await HandleAuth(connection, frame);
-                    break;
-                
                 case MessageType.DeclareQueue:
                     await HandleDeclareQueue(connection, frame);
                     break;
@@ -225,10 +258,6 @@ public class TcpServer
                     await HandleSetPrefetch(connection, frame);
                     break;
                 
-                case MessageType.Heartbeat:
-                    await HandleHeartbeat(connection, frame);
-                    break;
-                
                 default:
                     await SendError(connection, frame.CorrelationId, $"Unknown message type: {frame.Type}");
                     break;
@@ -244,7 +273,28 @@ public class TcpServer
 
     private async Task HandleAuth(ClientConnection connection, Frame frame)
     {
-        // Simple auth - for now just mark as authenticated
+        if (_config.Security.RequireAuth)
+        {
+            var payload = (AuthPayload)frame.Payload!;
+            
+            // Validate credentials (basic implementation — extend with JWT/token-based auth)
+            if (string.IsNullOrEmpty(payload.Username) || string.IsNullOrEmpty(payload.Password))
+            {
+                var errorResponse = new Frame
+                {
+                    Type = MessageType.Error,
+                    CorrelationId = frame.CorrelationId,
+                    Payload = new { success = false, message = "Username and password are required" }
+                };
+                await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, errorResponse);
+                return;
+            }
+            
+            // TODO: Replace with real credential store (database, LDAP, etc.)
+            _logger.LogInformation("Auth attempt from connection {ConnectionId} with user {Username}", 
+                connection.Id, payload.Username);
+        }
+        
         connection.IsAuthenticated = true;
         
         var response = new Frame
@@ -281,36 +331,35 @@ public class TcpServer
     {
         var payload = (PublishPayload)frame.Payload!;
         
-        // DETECT ISSUE: If queue is empty but we got a success payload, something is wrong
         if (string.IsNullOrEmpty(payload.Queue) && string.IsNullOrEmpty(payload.BodyBase64))
         {
-            _logger.LogError("DETECTED LOOP: Received PublishPayload with empty Queue and BodyBase64 - this looks like a response payload being re-sent as request!");
-            _logger.LogError("Frame CorrelationId: {CorrelationId}, MessageId: {MessageId}", frame.CorrelationId, payload.MessageId);
-            return; // Don't process this malformed request
+            _logger.LogError("Received malformed PublishPayload with empty Queue and BodyBase64 from connection {ConnectionId}", connection.Id);
+            return;
         }
         
-        _logger.LogInformation("HandlePublish called for queue '{QueueName}'", payload.Queue);
+        // Enforce max message size
+        var bodyBytes = Convert.FromBase64String(payload.BodyBase64);
+        if (bodyBytes.Length > _config.MaxMessageSize)
+        {
+            await SendError(connection, frame.CorrelationId, 
+                $"Message size ({bodyBytes.Length} bytes) exceeds maximum allowed ({_config.MaxMessageSize} bytes)");
+            return;
+        }
         
         var queue = _queueManager.GetQueue(payload.Queue);
         
         if (queue == null)
         {
-            // Auto-create queue when it doesn't exist
-            _logger.LogInformation("Auto-creating queue '{QueueName}' for publish operation", payload.Queue);
+            _logger.LogDebug("Auto-creating queue '{QueueName}' for publish operation", payload.Queue);
             queue = _queueManager.DeclareQueue(payload.Queue, durable: false);
         }
-        else
-        {
-            _logger.LogInformation("Queue '{QueueName}' already exists, using existing queue", payload.Queue);
-        }
 
-        var body = Convert.FromBase64String(payload.BodyBase64);
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         
         var message = new QueueMessage
         {
             MessageId = payload.MessageId,
-            Body = body,
+            Body = bodyBytes,
             EnqueuedAt = now,
             ExpiresAt = payload.TtlMs.HasValue ? now + payload.TtlMs.Value : null,
             Persistent = payload.Persistent,
@@ -324,18 +373,15 @@ public class TcpServer
         {
             var response = new Frame
             {
-                Type = MessageType.Publish, // Keep consistent with other operations
+                Type = MessageType.Publish,
                 CorrelationId = frame.CorrelationId,
                 Payload = new { success = true, messageId = payload.MessageId }
             };
             
-            _logger.LogInformation("Sending publish success response with correlationId {CorrelationId}", frame.CorrelationId);
             await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
-            _logger.LogInformation("Successfully sent publish response, now waiting for next request...");
         }
         catch (InvalidOperationException)
         {
-            // Connection already closed - message was still processed successfully
             _logger.LogDebug("Could not send publish response to connection {ConnectionId} - connection already closed", connection.Id);
         }
     }
@@ -360,20 +406,33 @@ public class TcpServer
         var consumerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         connection.ActiveConsumers[payload.Queue] = consumerCts;
 
-        // Start consuming
+        // Start consuming with prefetch control
         _ = Task.Run(async () =>
         {
+            var inFlightCount = 0;
             try
             {
                 while (!consumerCts.Token.IsCancellationRequested)
                 {
+                    // Enforce prefetch limit
+                    if (inFlightCount >= connection.Prefetch)
+                    {
+                        await Task.Delay(10, consumerCts.Token);
+                        continue;
+                    }
+
                     var message = await queue.DequeueAsync(connection.Id, consumerCts.Token);
                     if (message == null) continue;
+
+                    var deliveryTag = (ulong)Interlocked.Increment(ref _nextDeliveryTag);
+                    
+                    // Map delivery tag to queue for O(1) ack lookup
+                    _deliveryTagToQueue[deliveryTag] = payload.Queue;
 
                     var deliverPayload = new DeliverPayload
                     {
                         Queue = payload.Queue,
-                        DeliveryTag = (ulong)Interlocked.Increment(ref _nextDeliveryTag),
+                        DeliveryTag = deliveryTag,
                         BodyBase64 = Convert.ToBase64String(message.Body.Span),
                         Redelivered = message.Redelivered,
                         MessageId = message.MessageId
@@ -387,6 +446,7 @@ public class TcpServer
                     };
 
                     await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, deliverFrame);
+                    Interlocked.Increment(ref inFlightCount);
                 }
             }
             catch (OperationCanceledException)
@@ -414,14 +474,13 @@ public class TcpServer
     {
         var payload = (AckPayload)frame.Payload!;
         
-        // Find the queue containing this delivery tag (simplified approach)
         var success = false;
-        foreach (var queue in _queueManager.GetAllQueues())
+        if (_deliveryTagToQueue.TryRemove(payload.DeliveryTag, out var queueName))
         {
-            if (await queue.AckAsync(payload.DeliveryTag))
+            var queue = _queueManager.GetQueue(queueName);
+            if (queue != null)
             {
-                success = true;
-                break;
+                success = await queue.AckAsync(payload.DeliveryTag);
             }
         }
 
@@ -440,12 +499,12 @@ public class TcpServer
         var payload = (NackPayload)frame.Payload!;
         
         var success = false;
-        foreach (var queue in _queueManager.GetAllQueues())
+        if (_deliveryTagToQueue.TryRemove(payload.DeliveryTag, out var queueName))
         {
-            if (await queue.NackAsync(payload.DeliveryTag, payload.Requeue))
+            var queue = _queueManager.GetQueue(queueName);
+            if (queue != null)
             {
-                success = true;
-                break;
+                success = await queue.NackAsync(payload.DeliveryTag, payload.Requeue);
             }
         }
 

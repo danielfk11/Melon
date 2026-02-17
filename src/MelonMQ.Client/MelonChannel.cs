@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using MelonMQ.Client.Protocol;
+using MelonMQ.Protocol;
 
 namespace MelonMQ.Client;
 
@@ -35,8 +36,6 @@ public class MelonChannel : IDisposable, IAsyncDisposable
 
     public async Task PublishAsync(string queue, ReadOnlyMemory<byte> body, bool persistent = false, int? ttlMs = null, Guid? messageId = null, CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"[CLIENT] PublishAsync called for queue '{queue}', body size: {body.Length}");
-        
         var payload = new
         {
             queue = queue,
@@ -46,17 +45,13 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             messageId = messageId ?? Guid.NewGuid()
         };
 
-        Console.WriteLine($"[CLIENT] Sending Publish request for queue '{queue}'");
         var response = await _connection.SendRequestAsync(MessageType.Publish, payload, cancellationToken);
-        Console.WriteLine($"[CLIENT] Received response type: {response.Type}");
         
         if (response.Type == MessageType.Error)
         {
             var errorMessage = response.Payload?.GetProperty("message").GetString() ?? "Unknown error";
             throw new InvalidOperationException($"Failed to publish message: {errorMessage}");
         }
-        
-        Console.WriteLine($"[CLIENT] Publish successful for queue '{queue}'");
     }
 
     public async IAsyncEnumerable<IncomingMessage> ConsumeAsync(string queue, int prefetch = 100, [EnumeratorCancellation] CancellationToken cancellationToken = default)

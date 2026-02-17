@@ -2,17 +2,23 @@ using System.Collections.Concurrent;
 
 namespace MelonMQ.Broker.Core;
 
-public class QueueManager
+public class QueueManager : IQueueManager
 {
     private readonly ConcurrentDictionary<string, MessageQueue> _queues = new();
     private readonly string? _dataDirectory;
     private readonly ILogger<QueueManager> _logger;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly int _maxConnections;
+    private readonly int _channelCapacity;
+    private readonly long _compactionThresholdMB;
 
-    public QueueManager(string? dataDirectory, ILoggerFactory loggerFactory)
+    public QueueManager(string? dataDirectory, ILoggerFactory loggerFactory, int maxConnections = 1000, int channelCapacity = 10000, long compactionThresholdMB = 100)
     {
         _dataDirectory = dataDirectory;
         _loggerFactory = loggerFactory;
+        _maxConnections = maxConnections;
+        _channelCapacity = channelCapacity;
+        _compactionThresholdMB = compactionThresholdMB;
         _logger = loggerFactory.CreateLogger<QueueManager>();
 
         if (!string.IsNullOrEmpty(_dataDirectory))
@@ -33,7 +39,14 @@ public class QueueManager
                 DefaultTtlMs = defaultTtlMs
             };
 
-            var queue = new MessageQueue(config, _dataDirectory, _loggerFactory.CreateLogger<MessageQueue>());
+            // Pass queue resolver so DLQ routing works
+            var queue = new MessageQueue(
+                config, 
+                _dataDirectory, 
+                _loggerFactory.CreateLogger<MessageQueue>(),
+                queueResolver: GetQueue,
+                channelCapacity: _channelCapacity,
+                compactionThresholdMB: _compactionThresholdMB);
             _logger.LogInformation("Declared queue {QueueName} (durable: {Durable})", name, durable);
             return queue;
         });

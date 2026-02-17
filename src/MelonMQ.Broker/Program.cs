@@ -4,35 +4,48 @@ using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Bind and validate configuration
+var melonConfig = new MelonMQConfiguration();
+builder.Configuration.GetSection("MelonMQ").Bind(melonConfig);
+melonConfig.ValidateConfiguration();
+builder.Services.AddSingleton(melonConfig);
+
 // Configure services
 builder.Services.AddLogging();
 builder.Services.AddCors(options =>
 {
-    options.AddDefaultPolicy(builder =>
+    options.AddDefaultPolicy(policy =>
     {
-        builder.AllowAnyOrigin()
-               .AllowAnyHeader()
-               .AllowAnyMethod();
+        if (melonConfig.Security.AllowedOrigins.Length > 0)
+        {
+            policy.WithOrigins(melonConfig.Security.AllowedOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
+        else
+        {
+            policy.AllowAnyOrigin()
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
     });
 });
 
 builder.Services.AddSingleton<QueueManager>(provider =>
 {
-    var config = provider.GetService<IConfiguration>();
-    var dataDir = config?.GetValue<string>("MelonMQ:DataDirectory") ?? "data";
+    var config = provider.GetRequiredService<MelonMQConfiguration>();
     var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
-    return new QueueManager(dataDir, loggerFactory);
+    return new QueueManager(config.DataDirectory, loggerFactory, config.MaxConnections, config.ChannelCapacity, config.CompactionThresholdMB);
 });
 
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<TcpServer>(provider =>
 {
-    var config = provider.GetService<IConfiguration>();
-    var port = config?.GetValue<int>("MelonMQ:TcpPort") ?? 5672;
+    var config = provider.GetRequiredService<MelonMQConfiguration>();
     var queueManager = provider.GetRequiredService<QueueManager>();
     var connectionManager = provider.GetRequiredService<ConnectionManager>();
     var logger = provider.GetRequiredService<ILogger<TcpServer>>();
-    return new TcpServer(queueManager, connectionManager, port, logger);
+    return new TcpServer(queueManager, connectionManager, config, logger);
 });
 
 builder.Services.AddHostedService<MelonMQService>();
@@ -45,13 +58,25 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Configure HTTP endpoints
-app.Urls.Add($"http://localhost:{builder.Configuration.GetValue<int>("MelonMQ:HttpPort", 8080)}");
+app.Urls.Add($"http://localhost:{melonConfig.HttpPort}");
 
 app.MapGet("/", () => Results.Redirect("/index.html"));
 app.MapGet("/admin", () => Results.Redirect("/index.html"));
 app.MapGet("/management", () => Results.Redirect("/index.html"));
 
-app.MapGet("/health", () => new { status = "healthy", timestamp = DateTimeOffset.UtcNow });
+app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager) =>
+{
+    var isListening = tcpServer.IsListening;
+    var status = isListening ? "healthy" : "degraded";
+    
+    return Results.Ok(new
+    {
+        status,
+        tcpServer = isListening ? "listening" : "not listening",
+        connections = connectionManager.ConnectionCount,
+        timestamp = DateTimeOffset.UtcNow
+    });
+});
 
 app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionManager) =>
 {
@@ -93,7 +118,7 @@ app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueM
     }
 });
 
-app.MapPost("/queues/{queueName}/purge", (string queueName, QueueManager queueManager) =>
+app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager queueManager) =>
 {
     var queue = queueManager.GetQueue(queueName);
     if (queue == null)
@@ -103,7 +128,7 @@ app.MapPost("/queues/{queueName}/purge", (string queueName, QueueManager queueMa
 
     try
     {
-        _ = Task.Run(() => queue.PurgeAsync());
+        await queue.PurgeAsync();
         return Results.Ok(new { success = true, queue = queueName });
     }
     catch (Exception ex)
