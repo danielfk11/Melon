@@ -28,10 +28,10 @@ dotnet tool install -g MelonMQ.Broker
 melonmq
 
 # Em outro terminal, verificar status
-curl http://localhost:8080/health
+curl http://localhost:9090/health
 
 # Ver estatísticas
-curl http://localhost:8080/stats
+curl http://localhost:9090/stats
 ```
 
 ## 📦 Instalação
@@ -60,7 +60,7 @@ dotnet run
 melonmq
 ```
 
-O broker irá iniciar na porta TCP 5672 e HTTP 8080 por padrão.
+O broker irá iniciar na porta TCP 5672 e HTTP 9090 por padrão.
 
 ### Configurações
 
@@ -70,7 +70,7 @@ Configure o MelonMQ através de argumentos de linha de comando ou do arquivo `ap
 {
   "MelonMQ": {
     "TcpPort": 5672,
-    "HttpPort": 8080,
+    "HttpPort": 9090,
     "DataDirectory": "data",
     "BatchFlushMs": 10,
     "CompactionThresholdMB": 100,
@@ -169,13 +169,13 @@ O MelonMQ pode ser usado com qualquer linguagem via API HTTP. Veja os exemplos c
 import axios from 'axios';
 
 // Declarar fila
-await axios.post('http://localhost:8080/queues/declare', {
+await axios.post('http://localhost:9090/queues/declare', {
   name: 'my-queue',
   durable: true
 });
 
 // Publicar mensagem
-await axios.post('http://localhost:8080/queues/my-queue/publish', {
+await axios.post('http://localhost:9090/queues/my-queue/publish', {
   message: JSON.stringify({ hello: 'world' }),
   persistent: true,
   ttlMs: 300000
@@ -187,7 +187,7 @@ await axios.post('http://localhost:8080/queues/my-queue/publish', {
 import axios from 'axios';
 
 // Consumir mensagem (long polling, timeout 5s)
-const response = await axios.get('http://localhost:8080/queues/my-queue/consume');
+const response = await axios.get('http://localhost:9090/queues/my-queue/consume');
 if (response.data.message) {
   console.log('Mensagem:', response.data.message);
 }
@@ -242,41 +242,41 @@ O MelonMQ expõe uma API HTTP completa para operações e monitoramento:
 
 ```bash
 # Verificar saúde do broker
-curl http://localhost:8080/health
+curl http://localhost:9090/health
 
 # Ver estatísticas
-curl http://localhost:8080/stats
+curl http://localhost:9090/stats
 
 # Declarar uma fila com Dead Letter Queue
-curl -X POST http://localhost:8080/queues/declare \
+curl -X POST http://localhost:9090/queues/declare \
   -H "Content-Type: application/json" \
   -d '{"name":"my-queue","durable":true,"deadLetterQueue":"my-dlq","defaultTtlMs":60000}'
 
 # Publicar mensagem
-curl -X POST http://localhost:8080/queues/my-queue/publish \
+curl -X POST http://localhost:9090/queues/my-queue/publish \
   -H "Content-Type: application/json" \
   -d '{"message":"Hello MelonMQ","persistent":true,"ttlMs":300000}'
 
 # Consumir mensagem
-curl http://localhost:8080/queues/my-queue/consume
+curl http://localhost:9090/queues/my-queue/consume
 
 # Listar filas
-curl http://localhost:8080/queues
+curl http://localhost:9090/queues
 
 # Deletar fila
-curl -X DELETE http://localhost:8080/queues/my-queue
+curl -X DELETE http://localhost:9090/queues/my-queue
 
 # Limpar fila
-curl -X POST http://localhost:8080/queues/my-queue/purge
+curl -X POST http://localhost:9090/queues/my-queue/purge
 
 # Ver filas inativas
-curl http://localhost:8080/queues/inactive
+curl http://localhost:9090/queues/inactive
 
 # Forçar GC
-curl -X POST http://localhost:8080/queues/gc
+curl -X POST http://localhost:9090/queues/gc
 
 # Status do GC
-curl http://localhost:8080/queues/gc/status
+curl http://localhost:9090/queues/gc/status
 ```
 
 ## 🧪 Testes

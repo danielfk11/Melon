@@ -3,7 +3,7 @@ namespace MelonMQ.Broker.Core;
 public class MelonMQConfiguration
 {
     public int TcpPort { get; set; } = 5672;
-    public int HttpPort { get; set; } = 8080;
+    public int HttpPort { get; set; } = 9090;
     public string DataDirectory { get; set; } = "data";
     public int BatchFlushMs { get; set; } = 10;
     public int CompactionThresholdMB { get; set; } = 100;
