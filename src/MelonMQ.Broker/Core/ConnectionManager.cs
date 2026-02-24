@@ -5,24 +5,39 @@ using MelonMQ.Broker.Protocol;
 
 namespace MelonMQ.Broker.Core;
 
-public class ClientConnection
+public class ClientConnection : IDisposable
 {
     public string Id { get; }
     public Socket Socket { get; }
     public PipeReader Reader { get; }
-    public Stream Stream { get; } // Changed from PipeWriter to Stream
+    public Stream Stream { get; }
     public bool IsAuthenticated { get; set; }
     public int Prefetch { get; set; } = 100;
     public ConcurrentDictionary<string, CancellationTokenSource> ActiveConsumers { get; } = new();
     public long LastHeartbeat { get; set; }
+    public SemaphoreSlim WriteLock { get; } = new(1, 1);
 
     public ClientConnection(string id, Socket socket, PipeReader reader, Stream stream)
     {
         Id = id;
         Socket = socket;
         Reader = reader;
-        Stream = stream; // Store stream instead of PipeWriter
+        Stream = stream;
         LastHeartbeat = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    public void Dispose()
+    {
+        foreach (var consumer in ActiveConsumers.Values)
+        {
+            try { consumer.Cancel(); consumer.Dispose(); } catch { }
+        }
+        ActiveConsumers.Clear();
+
+        try { Reader.Complete(); } catch { }
+        try { Stream.Dispose(); } catch { }
+        try { Socket.Dispose(); } catch { }
+        WriteLock.Dispose();
     }
 }
 
@@ -48,18 +63,7 @@ public class ConnectionManager : IConnectionManager
     {
         if (_connections.TryRemove(connectionId, out var connection))
         {
-            // Cancel all active consumers
-            foreach (var consumer in connection.ActiveConsumers.Values)
-            {
-                consumer.Cancel();
-            }
-
-            try
-            {
-                connection.Socket.Close();
-            }
-            catch { }
-
+            connection.Dispose();
             _logger.LogInformation("Removed connection {ConnectionId}", connectionId);
         }
     }

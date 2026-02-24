@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 
 namespace MelonMQ.Broker.Core;
 
@@ -29,8 +30,27 @@ public class QueueManager : IQueueManager
 
     public int QueueCount => _queues.Count;
 
+    private static readonly Regex ValidQueueNamePattern = new(@"^[a-zA-Z0-9\-_.]+$", RegexOptions.Compiled);
+
+    private static void ValidateQueueName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Queue name cannot be empty.");
+
+        if (name.Length > 255)
+            throw new ArgumentException("Queue name cannot exceed 255 characters.");
+
+        if (name.Contains(".."))
+            throw new ArgumentException("Queue name cannot contain '..'.");
+
+        if (!ValidQueueNamePattern.IsMatch(name))
+            throw new ArgumentException($"Queue name '{name}' contains invalid characters. Only alphanumeric, hyphens, underscores, and dots are allowed.");
+    }
+
     public MessageQueue DeclareQueue(string name, bool durable = false, string? deadLetterQueue = null, int? defaultTtlMs = null)
     {
+        ValidateQueueName(name);
+        if (deadLetterQueue != null) ValidateQueueName(deadLetterQueue);
         return _queues.GetOrAdd(name, _ =>
         {
             var config = new QueueConfiguration

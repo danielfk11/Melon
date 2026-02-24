@@ -15,7 +15,7 @@ public class TcpServer
     private readonly MelonMQConfiguration _config;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
-    private readonly ConcurrentDictionary<ulong, (string QueueName, ulong QueueDeliveryTag)> _deliveryTagMap = new();
+    private readonly ConcurrentDictionary<ulong, (string ConnectionId, string QueueName, ulong QueueDeliveryTag)> _deliveryTagMap = new();
     private readonly ConcurrentDictionary<string, int> _connectionInFlightCount = new();
     private long _nextDeliveryTag = 0;
 
@@ -70,6 +70,24 @@ public class TcpServer
         _listener?.Stop();
         IsListening = false;
         _logger.LogInformation("TCP Server stopped");
+    }
+
+    /// <summary>
+    /// Thread-safe frame write. Multiple tasks (consumer loops, ack/nack responses, heartbeat)
+    /// may write to the same connection stream concurrently. NetworkStream.WriteAsync is NOT
+    /// thread-safe, so we serialize writes with a per-connection SemaphoreSlim.
+    /// </summary>
+    private async Task WriteFrameAsync(ClientConnection connection, Frame frame)
+    {
+        await connection.WriteLock.WaitAsync();
+        try
+        {
+            await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, frame);
+        }
+        finally
+        {
+            connection.WriteLock.Release();
+        }
     }
 
     private async Task HandleClientAsync(TcpClient tcpClient, CancellationToken cancellationToken)
@@ -144,6 +162,16 @@ public class TcpServer
             {
                 try
                 {
+                    // Clean up delivery tags for this connection
+                    var tagsToRemove = _deliveryTagMap
+                        .Where(kvp => kvp.Value.ConnectionId == connectionId)
+                        .Select(kvp => kvp.Key)
+                        .ToList();
+                    foreach (var tag in tagsToRemove)
+                    {
+                        _deliveryTagMap.TryRemove(tag, out _);
+                    }
+
                     // Requeue any in-flight messages
                     foreach (var queue in _queueManager.GetAllQueues())
                     {
@@ -152,7 +180,7 @@ public class TcpServer
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error requeuing messages for connection {ConnectionId}", connectionId);
+                    _logger.LogError(ex, "Error cleaning up connection {ConnectionId}", connectionId);
                 }
 
                 _connectionManager.RemoveConnection(connectionId);
@@ -287,7 +315,7 @@ public class TcpServer
                     CorrelationId = frame.CorrelationId,
                     Payload = new { success = false, message = "Username and password are required" }
                 };
-                await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, errorResponse);
+                await WriteFrameAsync(connection, errorResponse);
                 return;
             }
             
@@ -305,7 +333,7 @@ public class TcpServer
             Payload = new { success = true }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandleDeclareQueue(ClientConnection connection, Frame frame)
@@ -325,7 +353,7 @@ public class TcpServer
             Payload = new { success = true, queue = payload.Queue }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandlePublish(ClientConnection connection, Frame frame)
@@ -379,7 +407,7 @@ public class TcpServer
                 Payload = new { success = true, messageId = payload.MessageId }
             };
             
-            await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+            await WriteFrameAsync(connection, response);
         }
         catch (InvalidOperationException)
         {
@@ -431,8 +459,8 @@ public class TcpServer
                     var (message, queueDeliveryTag) = result.Value;
                     var clientDeliveryTag = (ulong)Interlocked.Increment(ref _nextDeliveryTag);
                     
-                    // Map client-facing tag to queue name + queue's internal tag
-                    _deliveryTagMap[clientDeliveryTag] = (payload.Queue, queueDeliveryTag);
+                    // Map client-facing tag to connection + queue name + queue's internal tag
+                    _deliveryTagMap[clientDeliveryTag] = (connection.Id, payload.Queue, queueDeliveryTag);
 
                     var deliverPayload = new DeliverPayload
                     {
@@ -450,7 +478,7 @@ public class TcpServer
                         Payload = deliverPayload
                     };
 
-                    await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, deliverFrame);
+                    await WriteFrameAsync(connection, deliverFrame);
                     _connectionInFlightCount.AddOrUpdate(inFlightKey, 1, (_, v) => v + 1);
                 }
             }
@@ -476,7 +504,7 @@ public class TcpServer
             Payload = new { success = true, queue = payload.Queue }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandleAck(ClientConnection connection, Frame frame)
@@ -504,7 +532,7 @@ public class TcpServer
             Payload = new { success }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandleNack(ClientConnection connection, Frame frame)
@@ -532,7 +560,7 @@ public class TcpServer
             Payload = new { success }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandleSetPrefetch(ClientConnection connection, Frame frame)
@@ -547,7 +575,7 @@ public class TcpServer
             Payload = new { success = true, prefetch = payload.Prefetch }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandleHeartbeat(ClientConnection connection, Frame frame)
@@ -559,7 +587,7 @@ public class TcpServer
             Payload = new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }
         };
         
-        await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, response);
+        await WriteFrameAsync(connection, response);
     }
 
     private async Task SendError(ClientConnection connection, ulong correlationId, string message)
@@ -573,7 +601,7 @@ public class TcpServer
                 Payload = new ErrorPayload { Message = message }
             };
             
-            await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, errorFrame);
+            await WriteFrameAsync(connection, errorFrame);
         }
         catch (InvalidOperationException)
         {

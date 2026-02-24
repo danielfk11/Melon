@@ -83,7 +83,7 @@ public static class FrameSerializer
         var jsonBytes = messageBuffer.ToArray();
         reader.AdvanceTo(messageBuffer.End);
 
-        var document = JsonDocument.Parse(jsonBytes);
+        using var document = JsonDocument.Parse(jsonBytes);
         
         var typeString = document.RootElement.GetProperty("type").GetString()!;
         var corrId = document.RootElement.GetProperty("corrId").GetUInt64();
