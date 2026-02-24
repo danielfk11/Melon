@@ -98,7 +98,7 @@ public class MessageQueue
         return true;
     }
 
-    public async Task<QueueMessage?> DequeueAsync(string connectionId, CancellationToken cancellationToken = default)
+    public async Task<(QueueMessage Message, ulong DeliveryTag)?> DequeueAsync(string connectionId, CancellationToken cancellationToken = default)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -128,7 +128,7 @@ public class MessageQueue
             _inFlightMessages[deliveryTag] = inFlight;
             Interlocked.Decrement(ref _pendingCount);
             TouchActivity();
-            return message;
+            return (message, deliveryTag);
         }
 
         return null;
@@ -387,6 +387,7 @@ public class MessageQueue
                     };
 
                     await _writer.WriteAsync(message);
+                    Interlocked.Increment(ref _pendingCount);
                     loadedCount++;
                 }
                 catch (Exception ex)

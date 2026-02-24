@@ -15,7 +15,8 @@ public class TcpServer
     private readonly MelonMQConfiguration _config;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
-    private readonly ConcurrentDictionary<ulong, string> _deliveryTagToQueue = new();
+    private readonly ConcurrentDictionary<ulong, (string QueueName, ulong QueueDeliveryTag)> _deliveryTagMap = new();
+    private readonly ConcurrentDictionary<string, int> _connectionInFlightCount = new();
     private long _nextDeliveryTag = 0;
 
     public bool IsListening { get; private set; }
@@ -407,32 +408,36 @@ public class TcpServer
         connection.ActiveConsumers[payload.Queue] = consumerCts;
 
         // Start consuming with prefetch control
+        var inFlightKey = $"{connection.Id}:{payload.Queue}";
+        _connectionInFlightCount.TryAdd(inFlightKey, 0);
+
         _ = Task.Run(async () =>
         {
-            var inFlightCount = 0;
             try
             {
                 while (!consumerCts.Token.IsCancellationRequested)
                 {
-                    // Enforce prefetch limit
-                    if (inFlightCount >= connection.Prefetch)
+                    // Enforce prefetch limit using shared atomic counter
+                    var currentInFlight = _connectionInFlightCount.GetValueOrDefault(inFlightKey, 0);
+                    if (currentInFlight >= connection.Prefetch)
                     {
                         await Task.Delay(10, consumerCts.Token);
                         continue;
                     }
 
-                    var message = await queue.DequeueAsync(connection.Id, consumerCts.Token);
-                    if (message == null) continue;
+                    var result = await queue.DequeueAsync(connection.Id, consumerCts.Token);
+                    if (result == null) continue;
 
-                    var deliveryTag = (ulong)Interlocked.Increment(ref _nextDeliveryTag);
+                    var (message, queueDeliveryTag) = result.Value;
+                    var clientDeliveryTag = (ulong)Interlocked.Increment(ref _nextDeliveryTag);
                     
-                    // Map delivery tag to queue for O(1) ack lookup
-                    _deliveryTagToQueue[deliveryTag] = payload.Queue;
+                    // Map client-facing tag to queue name + queue's internal tag
+                    _deliveryTagMap[clientDeliveryTag] = (payload.Queue, queueDeliveryTag);
 
                     var deliverPayload = new DeliverPayload
                     {
                         Queue = payload.Queue,
-                        DeliveryTag = deliveryTag,
+                        DeliveryTag = clientDeliveryTag,
                         BodyBase64 = Convert.ToBase64String(message.Body.Span),
                         Redelivered = message.Redelivered,
                         MessageId = message.MessageId
@@ -446,7 +451,7 @@ public class TcpServer
                     };
 
                     await FrameSerializer.WriteFrameToStreamAsync(connection.Stream, deliverFrame);
-                    Interlocked.Increment(ref inFlightCount);
+                    _connectionInFlightCount.AddOrUpdate(inFlightKey, 1, (_, v) => v + 1);
                 }
             }
             catch (OperationCanceledException)
@@ -457,6 +462,10 @@ public class TcpServer
             {
                 _logger.LogError(ex, "Error in consumer for queue {Queue} on connection {ConnectionId}", 
                     payload.Queue, connection.Id);
+            }
+            finally
+            {
+                _connectionInFlightCount.TryRemove(inFlightKey, out _);
             }
         });
 
@@ -475,13 +484,17 @@ public class TcpServer
         var payload = (AckPayload)frame.Payload!;
         
         var success = false;
-        if (_deliveryTagToQueue.TryRemove(payload.DeliveryTag, out var queueName))
+        if (_deliveryTagMap.TryRemove(payload.DeliveryTag, out var mapping))
         {
-            var queue = _queueManager.GetQueue(queueName);
+            var queue = _queueManager.GetQueue(mapping.QueueName);
             if (queue != null)
             {
-                success = await queue.AckAsync(payload.DeliveryTag);
+                success = await queue.AckAsync(mapping.QueueDeliveryTag);
             }
+
+            // Decrement in-flight counter for prefetch control
+            var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
+            _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
         }
 
         var response = new Frame
@@ -499,13 +512,17 @@ public class TcpServer
         var payload = (NackPayload)frame.Payload!;
         
         var success = false;
-        if (_deliveryTagToQueue.TryRemove(payload.DeliveryTag, out var queueName))
+        if (_deliveryTagMap.TryRemove(payload.DeliveryTag, out var mapping))
         {
-            var queue = _queueManager.GetQueue(queueName);
+            var queue = _queueManager.GetQueue(mapping.QueueName);
             if (queue != null)
             {
-                success = await queue.NackAsync(payload.DeliveryTag, payload.Requeue);
+                success = await queue.NackAsync(mapping.QueueDeliveryTag, payload.Requeue);
             }
+
+            // Decrement in-flight counter for prefetch control
+            var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
+            _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
         }
 
         var response = new Frame

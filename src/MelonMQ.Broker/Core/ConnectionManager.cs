@@ -30,10 +30,12 @@ public class ConnectionManager : IConnectionManager
 {
     private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
     private readonly ILogger<ConnectionManager> _logger;
+    private readonly int _connectionTimeoutMs;
 
-    public ConnectionManager(ILogger<ConnectionManager> logger)
+    public ConnectionManager(ILogger<ConnectionManager> logger, MelonMQConfiguration config)
     {
         _logger = logger;
+        _connectionTimeoutMs = config.ConnectionTimeout;
     }
 
     public void AddConnection(ClientConnection connection)
@@ -78,7 +80,7 @@ public class ConnectionManager : IConnectionManager
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var staleConnections = _connections.Values
-            .Where(c => now - c.LastHeartbeat > 30000) // 30 seconds timeout
+            .Where(c => now - c.LastHeartbeat > _connectionTimeoutMs)
             .ToList();
 
         foreach (var connection in staleConnections)

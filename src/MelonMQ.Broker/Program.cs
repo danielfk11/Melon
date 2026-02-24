@@ -121,18 +121,19 @@ app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueM
 {
     try
     {
+        // Enforce max queues limit before creating
+        if (melonConfig.QueueGC.MaxQueues > 0 
+            && queueManager.QueueCount >= melonConfig.QueueGC.MaxQueues
+            && queueManager.GetQueue(request.Name) == null)
+        {
+            return Results.BadRequest(new { error = $"Maximum queue limit ({melonConfig.QueueGC.MaxQueues}) reached. Delete unused queues first." });
+        }
+
         var queue = queueManager.DeclareQueue(
             request.Name, 
             request.Durable, 
             request.DeadLetterQueue, 
             request.DefaultTtlMs);
-
-        // Enforce max queues limit
-        if (melonConfig.QueueGC.MaxQueues > 0 && queueManager.QueueCount > melonConfig.QueueGC.MaxQueues)
-        {
-            queueManager.DeleteQueue(request.Name);
-            return Results.BadRequest(new { error = $"Maximum queue limit ({melonConfig.QueueGC.MaxQueues}) reached. Delete unused queues first." });
-        }
 
         return Results.Ok(new { success = true, queue = request.Name });
     }
@@ -202,12 +203,17 @@ app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager 
     try
     {
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // 5 second timeout
-        var message = await queue.DequeueAsync("http-client", cts.Token);
+        var result = await queue.DequeueAsync("http-client", cts.Token);
         
-        if (message == null)
+        if (result == null)
         {
             return Results.Ok(new { message = (string?)null });
         }
+
+        var (message, deliveryTag) = result.Value;
+        
+        // Auto-ack for HTTP consumers (stateless, no way to ack later)
+        await queue.AckAsync(deliveryTag);
 
         var bodyString = System.Text.Encoding.UTF8.GetString(message.Body.Span);
         return Results.Ok(new 
