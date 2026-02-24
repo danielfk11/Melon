@@ -86,8 +86,9 @@ public class MessageQueueTests : IDisposable
 
         // Assert
         dequeuedMessage.Should().NotBeNull();
-        dequeuedMessage!.Value.Message.MessageId.Should().Be(originalMessage.MessageId);
-        dequeuedMessage.Value.Message.Body.ToArray().Should().BeEquivalentTo(originalMessage.Body.ToArray());
+        var (msg, deliveryTag) = dequeuedMessage!.Value;
+        msg.MessageId.Should().Be(originalMessage.MessageId);
+        msg.Body.ToArray().Should().BeEquivalentTo(originalMessage.Body.ToArray());
         _messageQueue.InFlightCount.Should().Be(1);
     }
 
