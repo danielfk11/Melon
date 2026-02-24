@@ -12,14 +12,18 @@ public class QueueManager : IQueueManager
     private readonly int _maxConnections;
     private readonly int _channelCapacity;
     private readonly long _compactionThresholdMB;
+    private readonly int _batchFlushMs;
+    private readonly int _maxQueues;
 
-    public QueueManager(string? dataDirectory, ILoggerFactory loggerFactory, int maxConnections = 1000, int channelCapacity = 10000, long compactionThresholdMB = 100)
+    public QueueManager(string? dataDirectory, ILoggerFactory loggerFactory, int maxConnections = 1000, int channelCapacity = 10000, long compactionThresholdMB = 100, int batchFlushMs = 10, int maxQueues = 0)
     {
         _dataDirectory = dataDirectory;
         _loggerFactory = loggerFactory;
         _maxConnections = maxConnections;
         _channelCapacity = channelCapacity;
         _compactionThresholdMB = compactionThresholdMB;
+        _batchFlushMs = batchFlushMs;
+        _maxQueues = maxQueues;
         _logger = loggerFactory.CreateLogger<QueueManager>();
 
         if (!string.IsNullOrEmpty(_dataDirectory))
@@ -51,6 +55,13 @@ public class QueueManager : IQueueManager
     {
         ValidateQueueName(name);
         if (deadLetterQueue != null) ValidateQueueName(deadLetterQueue);
+
+        // Enforce max queues limit (check before creating)
+        if (_maxQueues > 0 && _queues.Count >= _maxQueues && !_queues.ContainsKey(name))
+        {
+            throw new InvalidOperationException($"Maximum queue limit ({_maxQueues}) reached. Delete unused queues first.");
+        }
+
         return _queues.GetOrAdd(name, _ =>
         {
             var config = new QueueConfiguration
@@ -68,7 +79,8 @@ public class QueueManager : IQueueManager
                 _loggerFactory.CreateLogger<MessageQueue>(),
                 queueResolver: GetQueue,
                 channelCapacity: _channelCapacity,
-                compactionThresholdMB: _compactionThresholdMB);
+                compactionThresholdMB: _compactionThresholdMB,
+                batchFlushMs: _batchFlushMs);
             _logger.LogInformation("Declared queue {QueueName} (durable: {Durable})", name, durable);
             return queue;
         });
@@ -88,6 +100,8 @@ public class QueueManager : IQueueManager
     {
         if (_queues.TryRemove(name, out var queue))
         {
+            // Clean up persistence file
+            queue.DeletePersistenceFile();
             _logger.LogInformation("Deleted queue {QueueName}", name);
             return true;
         }

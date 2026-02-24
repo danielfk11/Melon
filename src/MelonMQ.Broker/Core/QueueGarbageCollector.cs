@@ -8,15 +8,18 @@ public class QueueGarbageCollector : BackgroundService
 {
     private readonly QueueManager _queueManager;
     private readonly MelonMQConfiguration _config;
+    private readonly MelonMetrics _metrics;
     private readonly ILogger<QueueGarbageCollector> _logger;
 
     public QueueGarbageCollector(
         QueueManager queueManager,
         MelonMQConfiguration config,
+        MelonMetrics metrics,
         ILogger<QueueGarbageCollector> logger)
     {
         _queueManager = queueManager;
         _config = config;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -53,10 +56,10 @@ public class QueueGarbageCollector : BackgroundService
 
                 if (removed > 0)
                 {
-                    MelonMetrics.Instance.IncrementCounter("gc.queues_removed", removed);
+                    _metrics.IncrementCounter("gc.queues_removed", removed);
                 }
 
-                MelonMetrics.Instance.IncrementCounter("gc.runs");
+                _metrics.IncrementCounter("gc.runs");
             }
             catch (OperationCanceledException)
             {

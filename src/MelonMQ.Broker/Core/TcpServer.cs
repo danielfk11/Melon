@@ -11,22 +11,25 @@ public class TcpServer
 {
     private readonly QueueManager _queueManager;
     private readonly ConnectionManager _connectionManager;
+    private readonly MelonMetrics _metrics;
     private readonly ILogger<TcpServer> _logger;
     private readonly MelonMQConfiguration _config;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentDictionary<ulong, (string ConnectionId, string QueueName, ulong QueueDeliveryTag)> _deliveryTagMap = new();
     private readonly ConcurrentDictionary<string, int> _connectionInFlightCount = new();
+    private readonly ConcurrentBag<Task> _activeClientTasks = new();
     private long _nextDeliveryTag = 0;
 
     public bool IsListening { get; private set; }
 
-    public TcpServer(QueueManager queueManager, ConnectionManager connectionManager, MelonMQConfiguration config, ILogger<TcpServer> logger)
+    public TcpServer(QueueManager queueManager, ConnectionManager connectionManager, MelonMQConfiguration config, ILogger<TcpServer> logger, MelonMetrics metrics)
     {
         _queueManager = queueManager;
         _connectionManager = connectionManager;
         _config = config;
         _logger = logger;
+        _metrics = metrics;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -55,7 +58,8 @@ public class TcpServer
                     continue;
                 }
                 
-                _ = Task.Run(() => HandleClientAsync(tcpClient, _cancellationTokenSource.Token));
+                _ = Task.Run(() => HandleClientAsync(tcpClient, _cancellationTokenSource.Token))
+                    .ContinueWith(t => _activeClientTasks.TryTake(out _));
             }
         }
         catch (ObjectDisposedException)
@@ -64,12 +68,27 @@ public class TcpServer
         }
     }
 
-    public void Stop()
+    public async Task StopAsync(TimeSpan? gracefulTimeout = null)
     {
         _cancellationTokenSource?.Cancel();
         _listener?.Stop();
         IsListening = false;
+
+        // Wait for active client tasks to finish gracefully
+        var timeout = gracefulTimeout ?? TimeSpan.FromSeconds(10);
+        var allTasks = _activeClientTasks.Where(t => !t.IsCompleted).ToArray();
+        if (allTasks.Length > 0)
+        {
+            _logger.LogInformation("Waiting for {Count} active connections to close...", allTasks.Length);
+            await Task.WhenAny(Task.WhenAll(allTasks), Task.Delay(timeout));
+        }
+
         _logger.LogInformation("TCP Server stopped");
+    }
+
+    public void Stop()
+    {
+        _ = StopAsync();
     }
 
     /// <summary>
@@ -113,6 +132,7 @@ public class TcpServer
                 stream);
 
             _connectionManager.AddConnection(connection);
+            _metrics.RecordConnectionOpened();
             _logger.LogInformation("Client {ConnectionId} connected from {RemoteEndPoint}", 
                 connectionId, tcpClient.Client.RemoteEndPoint);
 
@@ -184,6 +204,7 @@ public class TcpServer
                 }
 
                 _connectionManager.RemoveConnection(connectionId);
+                _metrics.RecordConnectionClosed();
             }
             
             tcpClient.Close();
@@ -306,7 +327,7 @@ public class TcpServer
         {
             var payload = (AuthPayload)frame.Payload!;
             
-            // Validate credentials (basic implementation — extend with JWT/token-based auth)
+            // Validate credentials are provided
             if (string.IsNullOrEmpty(payload.Username) || string.IsNullOrEmpty(payload.Password))
             {
                 var errorResponse = new Frame
@@ -319,8 +340,32 @@ public class TcpServer
                 return;
             }
             
-            // TODO: Replace with real credential store (database, LDAP, etc.)
-            _logger.LogInformation("Auth attempt from connection {ConnectionId} with user {Username}", 
+            // Validate against configured credential store
+            if (_config.Security.Users.Count > 0)
+            {
+                if (!_config.Security.Users.TryGetValue(payload.Username, out var expectedPassword) 
+                    || expectedPassword != payload.Password)
+                {
+                    _logger.LogWarning("Auth failed for connection {ConnectionId} with user {Username}", 
+                        connection.Id, payload.Username);
+                    _metrics.RecordError("auth", "invalid_credentials");
+                    var errorResponse = new Frame
+                    {
+                        Type = MessageType.Error,
+                        CorrelationId = frame.CorrelationId,
+                        Payload = new { success = false, message = "Invalid username or password" }
+                    };
+                    await WriteFrameAsync(connection, errorResponse);
+                    return;
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Auth required but no users configured. Allowing connection {ConnectionId} with user {Username}",
+                    connection.Id, payload.Username);
+            }
+            
+            _logger.LogInformation("Auth success for connection {ConnectionId} with user {Username}", 
                 connection.Id, payload.Username);
         }
         
@@ -340,24 +385,33 @@ public class TcpServer
     {
         var payload = (DeclareQueuePayload)frame.Payload!;
         
-        var queue = _queueManager.DeclareQueue(
-            payload.Queue, 
-            payload.Durable, 
-            payload.DeadLetterQueue, 
-            payload.DefaultTtlMs);
-
-        var response = new Frame
+        try
         {
-            Type = MessageType.DeclareQueue,
-            CorrelationId = frame.CorrelationId,
-            Payload = new { success = true, queue = payload.Queue }
-        };
-        
-        await WriteFrameAsync(connection, response);
+            var queue = _queueManager.DeclareQueue(
+                payload.Queue, 
+                payload.Durable, 
+                payload.DeadLetterQueue, 
+                payload.DefaultTtlMs);
+
+            var response = new Frame
+            {
+                Type = MessageType.DeclareQueue,
+                CorrelationId = frame.CorrelationId,
+                Payload = new { success = true, queue = payload.Queue }
+            };
+            
+            await WriteFrameAsync(connection, response);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // MaxQueues limit exceeded
+            await SendError(connection, frame.CorrelationId, ex.Message);
+        }
     }
 
     private async Task HandlePublish(ClientConnection connection, Frame frame)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var payload = (PublishPayload)frame.Payload!;
         
         if (string.IsNullOrEmpty(payload.Queue) && string.IsNullOrEmpty(payload.BodyBase64))
@@ -397,6 +451,8 @@ public class TcpServer
         };
 
         await queue.EnqueueAsync(message);
+        sw.Stop();
+        _metrics.RecordMessagePublished(payload.Queue, sw.Elapsed);
 
         try
         {
@@ -445,11 +501,17 @@ public class TcpServer
             {
                 while (!consumerCts.Token.IsCancellationRequested)
                 {
-                    // Enforce prefetch limit using shared atomic counter
+                    // Enforce prefetch limit — wait for slot instead of busy-polling
                     var currentInFlight = _connectionInFlightCount.GetValueOrDefault(inFlightKey, 0);
                     if (currentInFlight >= connection.Prefetch)
                     {
-                        await Task.Delay(10, consumerCts.Token);
+                        // Wait for a slot to become available (signaled by Ack/Nack)
+                        try
+                        {
+                            await connection.PrefetchSlotAvailable.WaitAsync(consumerCts.Token);
+                        }
+                        catch (OperationCanceledException) { break; }
+                        catch (ObjectDisposedException) { break; }
                         continue;
                     }
 
@@ -480,6 +542,7 @@ public class TcpServer
 
                     await WriteFrameAsync(connection, deliverFrame);
                     _connectionInFlightCount.AddOrUpdate(inFlightKey, 1, (_, v) => v + 1);
+                    _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero);
                 }
             }
             catch (OperationCanceledException)
@@ -490,6 +553,7 @@ public class TcpServer
             {
                 _logger.LogError(ex, "Error in consumer for queue {Queue} on connection {ConnectionId}", 
                     payload.Queue, connection.Id);
+                _metrics.RecordError("consume", ex.GetType().Name);
             }
             finally
             {
@@ -523,6 +587,12 @@ public class TcpServer
             // Decrement in-flight counter for prefetch control
             var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
             _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
+
+            // Signal consumer loop that a prefetch slot is available
+            if (!connection.IsDisposed)
+            {
+                try { connection.PrefetchSlotAvailable.Release(); } catch (ObjectDisposedException) { }
+            }
         }
 
         var response = new Frame
@@ -551,6 +621,12 @@ public class TcpServer
             // Decrement in-flight counter for prefetch control
             var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
             _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
+
+            // Signal consumer loop that a prefetch slot is available
+            if (!connection.IsDisposed)
+            {
+                try { connection.PrefetchSlotAvailable.Release(); } catch (ObjectDisposedException) { }
+            }
         }
 
         var response = new Frame
@@ -566,6 +642,19 @@ public class TcpServer
     private async Task HandleSetPrefetch(ClientConnection connection, Frame frame)
     {
         var payload = (SetPrefetchPayload)frame.Payload!;
+
+        // Validate prefetch value
+        if (payload.Prefetch < 1)
+        {
+            await SendError(connection, frame.CorrelationId, "Prefetch must be at least 1");
+            return;
+        }
+        if (payload.Prefetch > 10000)
+        {
+            await SendError(connection, frame.CorrelationId, "Prefetch cannot exceed 10000");
+            return;
+        }
+
         connection.Prefetch = payload.Prefetch;
 
         var response = new Frame
@@ -618,6 +707,10 @@ public class TcpServer
             {
                 await _connectionManager.CleanupStaleConnections();
                 await _queueManager.CleanupExpiredMessages();
+
+                // Clean up stale delivery tags for expired in-flight messages
+                CleanupStaleDeliveryTags();
+
                 await Task.Delay(5000, cancellationToken); // Cleanup every 5 seconds
             }
             catch (OperationCanceledException)
@@ -628,6 +721,41 @@ public class TcpServer
             {
                 _logger.LogError(ex, "Error in cleanup task");
             }
+        }
+    }
+
+    /// <summary>
+    /// Removes delivery tag mappings that reference expired/removed in-flight messages.
+    /// Prevents memory leak when messages expire without explicit Ack/Nack.
+    /// </summary>
+    private void CleanupStaleDeliveryTags()
+    {
+        var tagsToRemove = new List<ulong>();
+        foreach (var (clientTag, mapping) in _deliveryTagMap)
+        {
+            var queue = _queueManager.GetQueue(mapping.QueueName);
+            if (queue == null)
+            {
+                tagsToRemove.Add(clientTag);
+                continue;
+            }
+
+            // Check if the queue's in-flight message still exists
+            var inFlightTags = queue.GetInFlightDeliveryTags();
+            if (!inFlightTags.Contains(mapping.QueueDeliveryTag))
+            {
+                tagsToRemove.Add(clientTag);
+            }
+        }
+
+        foreach (var tag in tagsToRemove)
+        {
+            _deliveryTagMap.TryRemove(tag, out _);
+        }
+
+        if (tagsToRemove.Count > 0)
+        {
+            _logger.LogDebug("Cleaned up {Count} stale delivery tag mappings", tagsToRemove.Count);
         }
     }
 }

@@ -33,7 +33,7 @@ public class MelonMQService : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Stopping MelonMQ TCP server...");
-        _tcpServer.Stop();
+        await _tcpServer.StopAsync(TimeSpan.FromSeconds(10));
         await base.StopAsync(cancellationToken);
     }
 }

@@ -35,9 +35,10 @@ builder.Services.AddSingleton<QueueManager>(provider =>
 {
     var config = provider.GetRequiredService<MelonMQConfiguration>();
     var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
-    return new QueueManager(config.DataDirectory, loggerFactory, config.MaxConnections, config.ChannelCapacity, config.CompactionThresholdMB);
+    return new QueueManager(config.DataDirectory, loggerFactory, config.MaxConnections, config.ChannelCapacity, config.CompactionThresholdMB, config.BatchFlushMs, config.QueueGC.MaxQueues);
 });
 
+builder.Services.AddSingleton<MelonMetrics>();
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<TcpServer>(provider =>
 {
@@ -45,7 +46,8 @@ builder.Services.AddSingleton<TcpServer>(provider =>
     var queueManager = provider.GetRequiredService<QueueManager>();
     var connectionManager = provider.GetRequiredService<ConnectionManager>();
     var logger = provider.GetRequiredService<ILogger<TcpServer>>();
-    return new TcpServer(queueManager, connectionManager, config, logger);
+    var metrics = provider.GetRequiredService<MelonMetrics>();
+    return new TcpServer(queueManager, connectionManager, config, logger, metrics);
 });
 
 builder.Services.AddHostedService<MelonMQService>();
@@ -93,7 +95,7 @@ app.MapGet("/queues", (QueueManager queueManager) =>
     return Results.Ok(new { queues = queues });
 });
 
-app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionManager) =>
+app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics) =>
 {
     var queues = queueManager.GetAllQueues().Select(q => new
     {
@@ -104,14 +106,14 @@ app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionMan
         idleTimeMs = q.IdleTimeMs
     });
 
-    var metrics = MelonMQ.Broker.Core.MelonMetrics.Instance.GetAllMetrics();
+    var allMetrics = metrics.GetAllMetrics();
 
     return new
     {
         queues = queues,
         connections = connectionManager.ConnectionCount,
         totalQueues = queueManager.QueueCount,
-        metrics = metrics,
+        metrics = allMetrics,
         uptime = DateTime.UtcNow.Subtract(Process.GetCurrentProcess().StartTime.ToUniversalTime()),
         timestamp = DateTimeOffset.UtcNow
     };
@@ -121,14 +123,6 @@ app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueM
 {
     try
     {
-        // Enforce max queues limit before creating
-        if (melonConfig.QueueGC.MaxQueues > 0 
-            && queueManager.QueueCount >= melonConfig.QueueGC.MaxQueues
-            && queueManager.GetQueue(request.Name) == null)
-        {
-            return Results.BadRequest(new { error = $"Maximum queue limit ({melonConfig.QueueGC.MaxQueues}) reached. Delete unused queues first." });
-        }
-
         var queue = queueManager.DeclareQueue(
             request.Name, 
             request.Durable, 
@@ -143,8 +137,11 @@ app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueM
     }
 });
 
-app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager queueManager) =>
+app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context))
+        return Results.Unauthorized();
+
     var queue = queueManager.GetQueue(queueName);
     if (queue == null)
     {
@@ -177,6 +174,7 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
         {
             MessageId = request.MessageId ?? Guid.NewGuid(),
             Body = new ReadOnlyMemory<byte>(body),
+            EnqueuedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Persistent = request.Persistent,
             ExpiresAt = request.TtlMs.HasValue 
                 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + request.TtlMs.Value 
@@ -236,9 +234,20 @@ app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation("MelonMQ Broker starting...");
 
-// Queue deletion endpoint
-app.MapDelete("/queues/{queueName}", (string queueName, QueueManager queueManager) =>
+// Helper: validate admin API key for destructive endpoints
+bool ValidateAdminApiKey(HttpContext context)
 {
+    if (!melonConfig.Security.HasAdminApiKey) return true;
+    var apiKey = context.Request.Headers["X-Api-Key"].FirstOrDefault();
+    return apiKey == melonConfig.Security.AdminApiKey;
+}
+
+// Queue deletion endpoint
+app.MapDelete("/queues/{queueName}", (string queueName, QueueManager queueManager, HttpContext context) =>
+{
+    if (!ValidateAdminApiKey(context))
+        return Results.Unauthorized();
+
     var deleted = queueManager.DeleteQueue(queueName);
     if (!deleted)
     {
@@ -268,8 +277,11 @@ app.MapGet("/queues/inactive", (QueueManager queueManager) =>
 });
 
 // Force GC run manually
-app.MapPost("/queues/gc", (QueueManager queueManager) =>
+app.MapPost("/queues/gc", (QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context))
+        return Results.Unauthorized();
+
     var removed = queueManager.CleanupInactiveQueues(
         melonConfig.QueueGC.InactiveThresholdSeconds,
         melonConfig.QueueGC.OnlyNonDurable);
@@ -283,7 +295,7 @@ app.MapPost("/queues/gc", (QueueManager queueManager) =>
 });
 
 // GC configuration status
-app.MapGet("/queues/gc/status", (QueueManager queueManager) =>
+app.MapGet("/queues/gc/status", (QueueManager queueManager, MelonMetrics metrics) =>
 {
     return Results.Ok(new
     {
@@ -293,8 +305,8 @@ app.MapGet("/queues/gc/status", (QueueManager queueManager) =>
         onlyNonDurable = melonConfig.QueueGC.OnlyNonDurable,
         maxQueues = melonConfig.QueueGC.MaxQueues == 0 ? "unlimited" : (object)melonConfig.QueueGC.MaxQueues,
         totalQueues = queueManager.QueueCount,
-        gcRuns = MelonMQ.Broker.Core.MelonMetrics.Instance.GetCounter("gc.runs"),
-        totalQueuesRemoved = MelonMQ.Broker.Core.MelonMetrics.Instance.GetCounter("gc.queues_removed")
+        gcRuns = metrics.GetCounter("gc.runs"),
+        totalQueuesRemoved = metrics.GetCounter("gc.queues_removed")
     });
 });
 

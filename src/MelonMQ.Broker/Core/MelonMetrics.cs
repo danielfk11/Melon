@@ -12,7 +12,7 @@ public class MelonMetrics
     
     public static MelonMetrics Instance { get; } = new();
 
-    private MelonMetrics() { }
+    public MelonMetrics() { }
 
     public void IncrementCounter(string name, long value = 1)
     {

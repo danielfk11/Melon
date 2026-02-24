@@ -206,27 +206,35 @@ public class MelonConnection : IDisposable, IAsyncDisposable
 
     private async Task HandleDelivery(Frame frame)
     {
-        if (frame.Payload?.TryGetProperty("queue", out var queueElement) == true)
+        try
         {
-            var queue = queueElement.GetString()!;
-            var deliveryTag = frame.Payload.Value.GetProperty("deliveryTag").GetUInt64();
-            var bodyBase64 = frame.Payload.Value.GetProperty("bodyBase64").GetString()!;
-            var redelivered = frame.Payload.Value.GetProperty("redelivered").GetBoolean();
-            var messageId = Guid.Parse(frame.Payload.Value.GetProperty("messageId").GetString()!);
-
-            var message = new IncomingMessage
+            if (frame.Payload?.TryGetProperty("queue", out var queueElement) == true)
             {
-                DeliveryTag = deliveryTag,
-                Body = Convert.FromBase64String(bodyBase64),
-                Redelivered = redelivered,
-                MessageId = messageId,
-                Queue = queue
-            };
+                var queue = queueElement.GetString()!;
+                var deliveryTag = frame.Payload.Value.GetProperty("deliveryTag").GetUInt64();
+                var bodyBase64 = frame.Payload.Value.GetProperty("bodyBase64").GetString()!;
+                var redelivered = frame.Payload.Value.GetProperty("redelivered").GetBoolean();
+                var messageId = Guid.Parse(frame.Payload.Value.GetProperty("messageId").GetString()!);
 
-            if (_deliveryChannels.TryGetValue(queue, out var channel))
-            {
-                await channel.Writer.WriteAsync(message);
+                var message = new IncomingMessage
+                {
+                    DeliveryTag = deliveryTag,
+                    Body = Convert.FromBase64String(bodyBase64),
+                    Redelivered = redelivered,
+                    MessageId = messageId,
+                    Queue = queue
+                };
+
+                if (_deliveryChannels.TryGetValue(queue, out var channel))
+                {
+                    await channel.Writer.WriteAsync(message);
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            // Log error but don't crash the processing loop
+            System.Diagnostics.Debug.WriteLine($"Error processing delivery frame: {ex.Message}");
         }
     }
 

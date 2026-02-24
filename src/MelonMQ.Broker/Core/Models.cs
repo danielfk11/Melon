@@ -26,4 +26,9 @@ public class QueueConfiguration
     public bool Durable { get; set; }
     public string? DeadLetterQueue { get; set; }
     public int? DefaultTtlMs { get; set; }
+    /// <summary>
+    /// Maximum number of delivery attempts before sending to DLQ.
+    /// 0 = unlimited retries.
+    /// </summary>
+    public int MaxDeliveryCount { get; set; } = 5;
 }

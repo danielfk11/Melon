@@ -19,17 +19,27 @@ public class MessageQueue
     private readonly SemaphoreSlim _persistenceLock = new(1, 1);
     private long _persistenceFileSize = 0;
     private readonly long _compactionThresholdBytes;
-    private ulong _nextDeliveryTag = 1;
+    private ulong _nextDeliveryTag = 0;
     private int _pendingCount = 0;
     private long _lastActivityAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private long _createdAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-    public MessageQueue(QueueConfiguration config, string? dataDirectory, ILogger<MessageQueue> logger, Func<string, MessageQueue?>? queueResolver = null, int channelCapacity = 10000, long compactionThresholdMB = 100)
+    // Persistence batching
+    private readonly Channel<string>? _persistenceBatchChannel;
+    private readonly Task? _persistenceBatchTask;
+    private readonly int _batchFlushMs;
+
+    // Load gate: blocks operations until persisted messages are loaded
+    private readonly TaskCompletionSource _loadGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly bool _needsLoad;
+
+    public MessageQueue(QueueConfiguration config, string? dataDirectory, ILogger<MessageQueue> logger, Func<string, MessageQueue?>? queueResolver = null, int channelCapacity = 10000, long compactionThresholdMB = 100, int batchFlushMs = 10)
     {
         _config = config;
         _logger = logger;
         _queueResolver = queueResolver;
         _compactionThresholdBytes = compactionThresholdMB * 1024 * 1024;
+        _batchFlushMs = batchFlushMs;
         
         var options = new BoundedChannelOptions(channelCapacity)
         {
@@ -49,7 +59,22 @@ public class MessageQueue
             {
                 _persistenceFileSize = new FileInfo(_persistenceFilePath).Length;
             }
+
+            // Setup persistence batching channel
+            _persistenceBatchChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = false
+            });
+            _persistenceBatchTask = Task.Run(PersistenceBatchLoop);
+
+            _needsLoad = true;
             _ = Task.Run(LoadPersistedMessages);
+        }
+        else
+        {
+            _needsLoad = false;
+            _loadGate.SetResult();
         }
     }
 
@@ -77,6 +102,9 @@ public class MessageQueue
 
     public async Task<bool> EnqueueAsync(QueueMessage message, CancellationToken cancellationToken = default)
     {
+        // Wait for persisted messages to finish loading before accepting new messages
+        await _loadGate.Task;
+
         // Check TTL
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
@@ -86,10 +114,18 @@ public class MessageQueue
             return false;
         }
 
-        // Persist if durable
-        if (_config.Durable && _persistenceFilePath != null)
+        // Persist if durable (batched)
+        if (_config.Durable && _persistenceBatchChannel != null)
         {
-            await PersistMessage(message);
+            var record = new
+            {
+                msgId = message.MessageId,
+                enqueuedAt = message.EnqueuedAt,
+                expiresAt = message.ExpiresAt,
+                payloadBase64 = Convert.ToBase64String(message.Body.Span)
+            };
+            var line = JsonSerializer.Serialize(record);
+            await _persistenceBatchChannel.Writer.WriteAsync(line, cancellationToken);
         }
 
         await _writer.WriteAsync(message, cancellationToken);
@@ -155,10 +191,20 @@ public class MessageQueue
     {
         if (_inFlightMessages.TryRemove(deliveryTag, out var inFlight))
         {
+            inFlight.Message.Redelivered = true;
+            inFlight.Message.DeliveryCount++;
+
+            // Enforce max delivery count — send to DLQ if exceeded
+            if (_config.MaxDeliveryCount > 0 && inFlight.Message.DeliveryCount >= _config.MaxDeliveryCount)
+            {
+                _logger.LogWarning("Message {MessageId} exceeded max delivery count ({MaxDeliveryCount}), sending to DLQ",
+                    inFlight.Message.MessageId, _config.MaxDeliveryCount);
+                await HandleDeadLetter(inFlight.Message);
+                return true;
+            }
+
             if (requeue)
             {
-                inFlight.Message.Redelivered = true;
-                inFlight.Message.DeliveryCount++;
                 try
                 {
                     await EnqueueAsync(inFlight.Message);
@@ -209,8 +255,14 @@ public class MessageQueue
             Interlocked.Decrement(ref _pendingCount);
             count++;
         }
-        // Garante que não fique negativo
-        Interlocked.Exchange(ref _pendingCount, Math.Max(0, _pendingCount));
+        // Atomically ensure pending count doesn't go negative
+        int current;
+        do
+        {
+            current = Volatile.Read(ref _pendingCount);
+            if (current >= 0) break;
+        } while (Interlocked.CompareExchange(ref _pendingCount, 0, current) != current);
+
         _logger.LogInformation("Purged {Count} messages from queue {QueueName}", count, _config.Name);
         return Task.CompletedTask;
     }
@@ -244,41 +296,73 @@ public class MessageQueue
         }
     }
 
-    private async Task PersistMessage(QueueMessage message)
+    /// <summary>
+    /// Background loop that batches persistence writes for throughput.
+    /// Accumulates lines and flushes every _batchFlushMs or when backlog is large.
+    /// </summary>
+    private async Task PersistenceBatchLoop()
     {
-        if (_persistenceFilePath == null) return;
+        if (_persistenceFilePath == null || _persistenceBatchChannel == null) return;
 
-        var record = new
-        {
-            msgId = message.MessageId,
-            enqueuedAt = message.EnqueuedAt,
-            expiresAt = message.ExpiresAt,
-            payloadBase64 = Convert.ToBase64String(message.Body.Span)
-        };
-
-        var line = JsonSerializer.Serialize(record) + Environment.NewLine;
-        
-        await _persistenceLock.WaitAsync();
+        var batch = new List<string>(64);
         try
         {
-            await File.AppendAllTextAsync(_persistenceFilePath, line);
-            _persistenceFileSize += Encoding.UTF8.GetByteCount(line);
-            
-            // Trigger compaction if file exceeds threshold
-            if (_persistenceFileSize > _compactionThresholdBytes)
+            while (await _persistenceBatchChannel.Reader.WaitToReadAsync())
             {
-                await CompactPersistenceLogAsync();
+                batch.Clear();
+
+                // Drain all available lines
+                while (_persistenceBatchChannel.Reader.TryRead(out var line))
+                {
+                    batch.Add(line);
+                }
+
+                if (batch.Count == 0) continue;
+
+                // Wait a small interval to gather more writes
+                if (_batchFlushMs > 0)
+                {
+                    await Task.Delay(_batchFlushMs);
+                    while (_persistenceBatchChannel.Reader.TryRead(out var line))
+                    {
+                        batch.Add(line);
+                    }
+                }
+
+                // Flush batch to disk
+                await _persistenceLock.WaitAsync();
+                try
+                {
+                    var sb = new StringBuilder();
+                    foreach (var l in batch)
+                    {
+                        sb.AppendLine(l);
+                    }
+                    var text = sb.ToString();
+                    await File.AppendAllTextAsync(_persistenceFilePath, text);
+                    _persistenceFileSize += Encoding.UTF8.GetByteCount(text);
+
+                    // Trigger compaction if file exceeds threshold
+                    if (_persistenceFileSize > _compactionThresholdBytes)
+                    {
+                        await CompactPersistenceLogAsync();
+                    }
+                }
+                finally
+                {
+                    _persistenceLock.Release();
+                }
             }
         }
-        finally
+        catch (Exception ex)
         {
-            _persistenceLock.Release();
+            _logger.LogError(ex, "Persistence batch loop error for queue {QueueName}", _config.Name);
         }
     }
 
     /// <summary>
     /// Compacts the persistence log by removing acked and expired messages.
-    /// Only retains messages that are still pending or in-flight.
+    /// Uses streaming to avoid loading entire file into memory.
     /// </summary>
     public async Task CompactPersistenceLogAsync()
     {
@@ -288,48 +372,51 @@ public class MessageQueue
         {
             _logger.LogInformation("Starting persistence compaction for queue {QueueName}", _config.Name);
             
-            var lines = await File.ReadAllLinesAsync(_persistenceFilePath);
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var survivingLines = new List<string>();
+            var tempPath = _persistenceFilePath + ".tmp";
             var removedCount = 0;
+            var survivingCount = 0;
 
-            foreach (var line in lines)
+            using (var reader = new StreamReader(_persistenceFilePath))
+            using (var writer = new StreamWriter(tempPath, false, Encoding.UTF8))
             {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                try
+                string? line;
+                while ((line = await reader.ReadLineAsync()) != null)
                 {
-                    var record = JsonSerializer.Deserialize<JsonElement>(line);
-                    var msgId = Guid.Parse(record.GetProperty("msgId").GetString()!);
-                    
-                    // Skip acked messages
-                    if (_ackedMessageIds.ContainsKey(msgId))
-                    {
-                        removedCount++;
-                        continue;
-                    }
+                    if (string.IsNullOrWhiteSpace(line)) continue;
 
-                    // Skip expired messages
-                    if (record.TryGetProperty("expiresAt", out var exp) && 
-                        exp.ValueKind != JsonValueKind.Null &&
-                        exp.GetInt64() <= now)
+                    try
                     {
-                        removedCount++;
-                        continue;
-                    }
+                        var record = JsonSerializer.Deserialize<JsonElement>(line);
+                        var msgId = Guid.Parse(record.GetProperty("msgId").GetString()!);
+                        
+                        // Skip acked messages
+                        if (_ackedMessageIds.ContainsKey(msgId))
+                        {
+                            removedCount++;
+                            continue;
+                        }
 
-                    survivingLines.Add(line);
-                }
-                catch
-                {
-                    // Skip corrupted lines
-                    removedCount++;
+                        // Skip expired messages
+                        if (record.TryGetProperty("expiresAt", out var exp) && 
+                            exp.ValueKind != JsonValueKind.Null &&
+                            exp.GetInt64() <= now)
+                        {
+                            removedCount++;
+                            continue;
+                        }
+
+                        await writer.WriteLineAsync(line);
+                        survivingCount++;
+                    }
+                    catch
+                    {
+                        // Skip corrupted lines
+                        removedCount++;
+                    }
                 }
             }
 
-            // Write compacted file atomically
-            var tempPath = _persistenceFilePath + ".tmp";
-            await File.WriteAllLinesAsync(tempPath, survivingLines);
             File.Move(tempPath, _persistenceFilePath, overwrite: true);
 
             // Clear acked IDs that were just compacted
@@ -339,7 +426,7 @@ public class MessageQueue
             _persistenceFileSize = new FileInfo(_persistenceFilePath).Length;
 
             _logger.LogInformation("Compacted persistence log for queue {QueueName}: removed {Removed} entries, {Remaining} remaining", 
-                _config.Name, removedCount, survivingLines.Count);
+                _config.Name, removedCount, survivingCount);
         }
         catch (Exception ex)
         {
@@ -350,15 +437,19 @@ public class MessageQueue
     private async Task LoadPersistedMessages()
     {
         if (_persistenceFilePath == null || !File.Exists(_persistenceFilePath))
+        {
+            _loadGate.TrySetResult();
             return;
+        }
 
         try
         {
-            var lines = await File.ReadAllLinesAsync(_persistenceFilePath);
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var loadedCount = 0;
 
-            foreach (var line in lines)
+            using var reader = new StreamReader(_persistenceFilePath);
+            string? line;
+            while ((line = await reader.ReadLineAsync()) != null)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -403,6 +494,10 @@ public class MessageQueue
         {
             _logger.LogError(ex, "Failed to load persisted messages for queue {QueueName}", _config.Name);
         }
+        finally
+        {
+            _loadGate.TrySetResult();
+        }
     }
 
     public async Task CleanupExpiredInFlightMessages()
@@ -422,6 +517,33 @@ public class MessageQueue
                 
                 _logger.LogDebug("Requeued expired in-flight message {MessageId}", 
                     inFlight.Message.MessageId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns the set of in-flight delivery tags for cleanup by TcpServer.
+    /// </summary>
+    public IEnumerable<ulong> GetInFlightDeliveryTags()
+    {
+        return _inFlightMessages.Keys;
+    }
+
+    /// <summary>
+    /// Deletes the persistence file for this queue (used when queue is deleted).
+    /// </summary>
+    public void DeletePersistenceFile()
+    {
+        if (_persistenceFilePath != null && File.Exists(_persistenceFilePath))
+        {
+            try
+            {
+                File.Delete(_persistenceFilePath);
+                _logger.LogInformation("Deleted persistence file for queue {QueueName}", _config.Name);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to delete persistence file for queue {QueueName}", _config.Name);
             }
         }
     }

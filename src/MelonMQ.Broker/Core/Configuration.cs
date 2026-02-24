@@ -54,7 +54,20 @@ public class SecurityConfiguration
     public bool RequireAuth { get; set; } = false;
     public string[] AllowedOrigins { get; set; } = Array.Empty<string>();
     
+    /// <summary>
+    /// API key required for HTTP admin endpoints (purge, delete, gc).
+    /// If empty, admin endpoints are unprotected.
+    /// </summary>
+    public string AdminApiKey { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// Credential store for TCP auth. Key = username, Value = password.
+    /// Loaded from configuration section "MelonMQ:Security:Users".
+    /// </summary>
+    public Dictionary<string, string> Users { get; set; } = new();
+    
     public bool IsConfigured => !string.IsNullOrEmpty(JwtSecret);
+    public bool HasAdminApiKey => !string.IsNullOrEmpty(AdminApiKey);
 }
 
 public static class ConfigurationExtensions

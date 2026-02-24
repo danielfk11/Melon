@@ -7,15 +7,30 @@ namespace MelonMQ.Tests.Integration;
 
 public class SimpleIntegrationTests
 {
-    [Fact]
+    /// <summary>
+    /// Tests basic produce/consume flow. Requires a running MelonMQ broker on localhost:5672.
+    /// Test is skipped (not falsely passed) when the broker is unavailable.
+    /// </summary>
+    [SkippableFact]
     public async Task BasicProducerConsumer_ShouldWork_WhenBrokerIsRunning()
     {
         // NOTE: This test requires MelonMQ broker running on localhost:5672
         // Run before testing: dotnet run --project src/MelonMQ.Broker
         
+        MelonConnection connection;
         try
         {
-            using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672", null);
+            connection = await MelonConnection.ConnectAsync("melon://localhost:5672", null);
+        }
+        catch (Exception ex)
+        {
+            // Skip test if broker not running — don't falsely pass
+            Skip.If(true, $"Broker not available: {ex.Message}");
+            return;
+        }
+
+        using (connection)
+        {
             using var channel = await connection.CreateChannelAsync();
 
             // Test basic operations
@@ -40,11 +55,6 @@ public class SimpleIntegrationTests
             // Verify
             messageReceived.Should().BeTrue();
             receivedContent.Should().Be(testMessage);
-        }
-        catch (Exception ex)
-        {
-            // Skip test if broker not running
-            Assert.True(true, $"Integration test skipped - broker not available: {ex.Message}");
         }
     }
 }

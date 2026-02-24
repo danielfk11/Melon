@@ -16,6 +16,14 @@ public class ClientConnection : IDisposable
     public ConcurrentDictionary<string, CancellationTokenSource> ActiveConsumers { get; } = new();
     public long LastHeartbeat { get; set; }
     public SemaphoreSlim WriteLock { get; } = new(1, 1);
+    /// <summary>
+    /// Semaphore used to notify consumer loops when prefetch slots become available.
+    /// Released on Ack/Nack, waited on in consumer loop instead of busy-wait polling.
+    /// </summary>
+    public SemaphoreSlim PrefetchSlotAvailable { get; } = new(0, int.MaxValue);
+    private int _disposed;
+
+    public bool IsDisposed => Volatile.Read(ref _disposed) == 1;
 
     public ClientConnection(string id, Socket socket, PipeReader reader, Stream stream)
     {
@@ -28,6 +36,9 @@ public class ClientConnection : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+            return;
+
         foreach (var consumer in ActiveConsumers.Values)
         {
             try { consumer.Cancel(); consumer.Dispose(); } catch { }
@@ -38,6 +49,7 @@ public class ClientConnection : IDisposable
         try { Stream.Dispose(); } catch { }
         try { Socket.Dispose(); } catch { }
         WriteLock.Dispose();
+        PrefetchSlotAvailable.Dispose();
     }
 }
 
