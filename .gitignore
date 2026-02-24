@@ -397,3 +397,4 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+/src/MelonMQ.Broker/obj
