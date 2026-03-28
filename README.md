@@ -19,7 +19,7 @@ Message broker leve escrito em C# com protocolo TCP binário e API HTTP.
 ## Início rápido
 
 ```bash
-git clone https://github.com/yourusername/MelonMQ.git
+git clone https://github.com/danielfk11/MelonMQ.git
 cd MelonMQ
 dotnet build
 cd src/MelonMQ.Broker

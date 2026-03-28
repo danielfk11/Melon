@@ -3,284 +3,291 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MelonMQ Management</title>
+    <title>MelonMQ — Dashboard</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #232631;
+            --border: #2e3140;
+            --text: #e4e6ef;
+            --text-dim: #8b8fa3;
+            --accent: #6ee7b7;
+            --accent2: #67e8f9;
+            --blue: #60a5fa;
+            --purple: #a78bfa;
+            --orange: #fbbf24;
+            --red: #f87171;
+            --green: #6ee7b7;
+            --pink: #f472b6;
+            --radius: 12px;
+            --shadow: 0 2px 12px rgba(0,0,0,.35);
         }
-        
+
+        * { margin:0; padding:0; box-sizing:border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
-            color: #333;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
         }
-        
+
+        /* Header */
         .header {
-            background: #2c3e50;
-            color: white;
-            padding: 1rem 2rem;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem;
+            height: 60px;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            justify-content: space-between;
+            position: sticky; top:0; z-index:50;
+            backdrop-filter: blur(12px);
         }
-        
-        .melon-icon {
-            font-size: 1.5rem;
+        .logo { display:flex; align-items:center; gap:.6rem; font-size:1.15rem; font-weight:700; letter-spacing:-.02em; }
+        .logo svg { width:28px; height:28px; }
+        .header-right { display:flex; align-items:center; gap:1.2rem; }
+        .status-pill {
+            display:flex; align-items:center; gap:.4rem;
+            background: var(--surface2); border:1px solid var(--border);
+            padding: .3rem .75rem; border-radius:9999px; font-size:.78rem; font-weight:500;
         }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        .status-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+        .status-dot.healthy { background:var(--green); box-shadow: 0 0 6px var(--green); }
+        .status-dot.degraded { background:var(--orange); box-shadow: 0 0 6px var(--orange); }
+        .status-dot.error { background:var(--red); box-shadow: 0 0 6px var(--red); }
+        .uptime-text { color:var(--text-dim); font-size:.78rem; }
+
+        /* Container */
+        .container { max-width:1380px; margin:0 auto; padding:1.5rem 2rem 3rem; }
+
+        /* Metric Cards */
+        .metrics-row {
+            display:grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px,1fr));
             gap: 1rem;
-            margin-bottom: 2rem;
+            margin-bottom: 1.5rem;
         }
-        
-        .stat-card {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            border-left: 4px solid #3498db;
+        .metric-card {
+            background:var(--surface);
+            border:1px solid var(--border);
+            border-radius:var(--radius);
+            padding:1.25rem 1.4rem;
+            display:flex; flex-direction:column; gap:.35rem;
+            position:relative; overflow:hidden;
+            transition: border-color .2s, transform .15s;
         }
-        
-        .stat-card.queues { border-left-color: #e74c3c; }
-        .stat-card.connections { border-left-color: #f39c12; }
-        .stat-card.messages { border-left-color: #27ae60; }
-        .stat-card.throughput { border-left-color: #9b59b6; }
-        
-        .stat-value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #2c3e50;
+        .metric-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+        .metric-card .icon {
+            position:absolute; top:1rem; right:1.2rem;
+            width:38px; height:38px; border-radius:10px;
+            display:flex; align-items:center; justify-content:center;
+            font-size:1.1rem; opacity:.85;
         }
-        
-        .stat-label {
-            color: #7f8c8d;
-            margin-top: 0.5rem;
+        .metric-card .icon.q   { background: rgba(248,113,113,.12); color:var(--red); }
+        .metric-card .icon.c   { background: rgba(251,191,36,.12);  color:var(--orange); }
+        .metric-card .icon.m   { background: rgba(110,231,183,.12); color:var(--green); }
+        .metric-card .icon.f   { background: rgba(167,139,250,.12); color:var(--purple); }
+        .metric-card .icon.pub { background: rgba(96,165,250,.12);  color:var(--blue); }
+        .metric-card .icon.con { background: rgba(244,114,182,.12); color:var(--pink); }
+        .metric-label { font-size:.78rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; font-weight:500; }
+        .metric-value { font-size:1.75rem; font-weight:700; letter-spacing:-.03em; line-height:1.1; }
+        .metric-sub { font-size:.72rem; color:var(--text-dim); }
+
+        /* Tabs */
+        .tabs { display:flex; gap:0; margin-bottom:1.5rem; border-bottom:1px solid var(--border); }
+        .tab {
+            padding:.7rem 1.3rem; font-size:.85rem; font-weight:500; cursor:pointer;
+            color:var(--text-dim); border-bottom:2px solid transparent;
+            transition: color .2s, border-color .2s;
+            background:none; border-top:none; border-left:none; border-right:none;
         }
-        
-        .section {
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 2rem;
+        .tab:hover { color:var(--text); }
+        .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+        /* Panel */
+        .panel {
+            background:var(--surface);
+            border:1px solid var(--border);
+            border-radius:var(--radius);
+            margin-bottom:1.5rem;
+            overflow:hidden;
         }
-        
-        .section-header {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid #ecf0f1;
-            background: #f8f9fa;
-            border-radius: 8px 8px 0 0;
+        .panel-header {
+            padding:1rem 1.4rem;
+            display:flex; align-items:center; justify-content:space-between;
+            border-bottom:1px solid var(--border);
+            background: var(--surface2);
         }
-        
-        .section-header h2 {
-            color: #2c3e50;
-        }
-        
-        .section-content {
-            padding: 1.5rem;
-        }
-        
-        .queue-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        .queue-table th,
-        .queue-table td {
-            text-align: left;
-            padding: 0.75rem;
-            border-bottom: 1px solid #ecf0f1;
-        }
-        
-        .queue-table th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #2c3e50;
-        }
-        
-        .queue-table tr:hover {
-            background: #f8f9fa;
-        }
-        
+        .panel-header h2 { font-size:.95rem; font-weight:600; }
+        .panel-body { padding:1.4rem; }
+
+        /* Table */
+        .tbl { width:100%; border-collapse:collapse; }
+        .tbl th, .tbl td { text-align:left; padding:.7rem .9rem; font-size:.84rem; }
+        .tbl th { color:var(--text-dim); font-weight:500; text-transform:uppercase; font-size:.72rem; letter-spacing:.04em; border-bottom:1px solid var(--border); }
+        .tbl td { border-bottom:1px solid var(--border); }
+        .tbl tbody tr { transition: background .15s; }
+        .tbl tbody tr:hover { background: var(--surface2); }
+        .tbl tbody tr:last-child td { border-bottom:none; }
+
+        /* Badge */
         .badge {
-            display: inline-block;
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 600;
+            display:inline-flex; align-items:center; gap:.3rem;
+            padding:.2rem .55rem; border-radius:6px;
+            font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
         }
-        
-        .badge.durable {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .badge.transient {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
+        .badge.durable  { background:rgba(110,231,183,.12); color:var(--green); }
+        .badge.transient { background:rgba(248,113,113,.12); color:var(--red); }
+
+        /* Progress bar */
+        .bar-wrap { width:100%; height:6px; background:var(--surface2); border-radius:3px; overflow:hidden; }
+        .bar-fill { height:100%; border-radius:3px; transition:width .5s ease; }
+        .bar-fill.green { background: linear-gradient(90deg, var(--green), var(--accent2)); }
+
+        /* Buttons */
         .btn {
-            padding: 0.5rem 1rem;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.875rem;
-            font-weight: 500;
-            text-decoration: none;
-            display: inline-block;
+            display:inline-flex; align-items:center; gap:.35rem;
+            padding:.45rem .9rem; border:1px solid var(--border); border-radius:8px;
+            font-size:.8rem; font-weight:500; cursor:pointer;
+            background:var(--surface2); color:var(--text);
+            transition: background .15s, border-color .15s, transform .1s;
         }
-        
-        .btn-primary {
-            background: #3498db;
-            color: white;
+        .btn:hover { background:var(--border); transform:translateY(-1px); }
+        .btn:active { transform:translateY(0); }
+        .btn-accent { background:rgba(110,231,183,.12); border-color:rgba(110,231,183,.25); color:var(--green); }
+        .btn-accent:hover { background:rgba(110,231,183,.2); }
+        .btn-red { background:rgba(248,113,113,.1); border-color:rgba(248,113,113,.25); color:var(--red); }
+        .btn-red:hover { background:rgba(248,113,113,.2); }
+        .btn-blue { background:rgba(96,165,250,.1); border-color:rgba(96,165,250,.25); color:var(--blue); }
+        .btn-blue:hover { background:rgba(96,165,250,.2); }
+        .btn-sm { padding:.3rem .6rem; font-size:.73rem; }
+
+        /* Form */
+        .form-row { display:flex; gap:1rem; flex-wrap:wrap; align-items:end; }
+        .form-group { flex:1; min-width:140px; }
+        .form-group label { display:block; margin-bottom:.3rem; font-size:.75rem; color:var(--text-dim); font-weight:500; text-transform:uppercase; letter-spacing:.04em; }
+        .form-group input, .form-group select {
+            width:100%; padding:.5rem .7rem; font-size:.84rem;
+            background:var(--surface2); color:var(--text);
+            border:1px solid var(--border); border-radius:8px;
+            transition: border-color .2s;
         }
-        
-        .btn-danger {
-            background: #e74c3c;
-            color: white;
+        .form-group input::placeholder { color:var(--text-dim); opacity:.6; }
+        .form-group input:focus, .form-group select:focus { outline:none; border-color:var(--accent); }
+
+        /* Toast */
+        .toast {
+            padding:.6rem 1rem; border-radius:8px; font-size:.82rem; font-weight:500;
+            display:flex; align-items:center; gap:.5rem;
+            animation: slideIn .3s ease;
         }
-        
-        .btn-success {
-            background: #27ae60;
-            color: white;
+        .toast.success { background:rgba(110,231,183,.12); color:var(--green); border:1px solid rgba(110,231,183,.25); }
+        .toast.error   { background:rgba(248,113,113,.12); color:var(--red); border:1px solid rgba(248,113,113,.25); }
+
+        @keyframes slideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+
+        /* Sparkline */
+        .sparkline-row { display:flex; gap:3px; align-items:end; height:28px; }
+        .spark-bar {
+            flex:1; min-width:3px; border-radius:1.5px;
+            background: var(--accent); opacity:.6;
+            transition: height .3s ease;
         }
-        
-        .btn:hover {
-            opacity: 0.8;
-        }
-        
-        .form-row {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 1rem;
-            align-items: end;
-        }
-        
-        .form-group {
-            flex: 1;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 0.25rem;
-            font-weight: 500;
-            color: #2c3e50;
-        }
-        
-        .form-group input,
-        .form-group select {
-            width: 100%;
-            padding: 0.5rem;
-            border: 1px solid #bdc3c7;
-            border-radius: 4px;
-            font-size: 0.875rem;
-        }
-        
-        .form-group input:focus,
-        .form-group select:focus {
-            outline: none;
-            border-color: #3498db;
-            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-right: 0.5rem;
-        }
-        
-        .status-healthy { background: #27ae60; }
-        .status-warning { background: #f39c12; }
-        .status-error { background: #e74c3c; }
-        
-        .refresh-info {
-            text-align: right;
-            color: #7f8c8d;
-            font-size: 0.875rem;
-            margin-bottom: 1rem;
-        }
-        
-        .loading {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 2rem;
-            color: #7f8c8d;
-        }
-        
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 1rem;
-            border-radius: 4px;
-            margin-bottom: 1rem;
-        }
+
+        /* Misc */
+        .empty-state { text-align:center; padding:2.5rem 1rem; color:var(--text-dim); }
+        .empty-state .icon { font-size:2rem; margin-bottom:.5rem; opacity:.5; }
+        .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
+        @media(max-width:768px) { .grid-2 { grid-template-columns:1fr; } .metrics-row { grid-template-columns:repeat(2,1fr); } }
+        .mono { font-family:'SF Mono','Fira Code',monospace; font-size:.82rem; }
+        .idle-text { color:var(--text-dim); font-size:.78rem; }
+        .kv-grid { display:grid; grid-template-columns: auto 1fr; gap:.4rem 1.2rem; font-size:.82rem; }
+        .kv-grid dt { color:var(--text-dim); }
+        .kv-grid dd { font-weight:500; }
+        .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
+        .fade-enter-from, .fade-leave-to { opacity:0; }
     </style>
 </head>
 <body>
-    <div id="app">
-        <header class="header">
-            <h1>
-                <span class="melon-icon">🍈</span>
-                MelonMQ Management
-                <small style="margin-left: auto; font-size: 0.8rem; opacity: 0.8;">
-                    <span class="status-indicator" :class="healthStatus"></span>
-                    {{ health?.status || 'Connecting...' }}
-                </small>
-            </h1>
-        </header>
-        
-        <div class="container">
-            <!-- Stats Overview -->
-            <div class="stats-grid">
-                <div class="stat-card queues">
-                    <div class="stat-value">{{ stats?.queues?.length || 0 }}</div>
-                    <div class="stat-label">Total Queues</div>
-                </div>
-                <div class="stat-card connections">
-                    <div class="stat-value">{{ stats?.connections || 0 }}</div>
-                    <div class="stat-label">Active Connections</div>
-                </div>
-                <div class="stat-card messages">
-                    <div class="stat-value">{{ totalMessages }}</div>
-                    <div class="stat-label">Pending Messages</div>
-                </div>
-                <div class="stat-card throughput">
-                    <div class="stat-value">{{ totalInFlight }}</div>
-                    <div class="stat-label">In-Flight Messages</div>
-                </div>
+<div id="app">
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">
+            <svg viewBox="0 0 36 36" fill="none"><circle cx="18" cy="18" r="16" fill="#6ee7b7" opacity=".15"/><text x="18" y="24" text-anchor="middle" font-size="22">🍈</text></svg>
+            MelonMQ
+        </div>
+        <div class="header-right">
+            <span class="uptime-text" v-if="stats?.uptime">⏱ {{ formatUptime(stats.uptime) }}</span>
+            <div class="status-pill">
+                <span class="status-dot" :class="healthClass"></span>
+                {{ health?.status || 'connecting' }}
             </div>
-            
-            <!-- Create Queue Form -->
-            <div class="section">
-                <div class="section-header">
-                    <h2>Create New Queue</h2>
+        </div>
+    </header>
+
+    <div class="container">
+
+        <!-- Top Metric Cards -->
+        <div class="metrics-row">
+            <div class="metric-card">
+                <div class="icon q">📦</div>
+                <span class="metric-label">Queues</span>
+                <span class="metric-value">{{ stats?.totalQueues ?? 0 }}</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon c">🔗</div>
+                <span class="metric-label">Connections</span>
+                <span class="metric-value">{{ stats?.connections ?? 0 }}</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon m">💬</div>
+                <span class="metric-label">Pending</span>
+                <span class="metric-value">{{ totalPending }}</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon f">🚀</div>
+                <span class="metric-label">In-Flight</span>
+                <span class="metric-value">{{ totalInFlight }}</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon pub">📤</div>
+                <span class="metric-label">Published</span>
+                <span class="metric-value">{{ metricCounter('messages.published.total') }}</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon con">📥</div>
+                <span class="metric-label">Consumed</span>
+                <span class="metric-value">{{ metricCounter('messages.consumed.total') }}</span>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab" :class="{active: tab==='queues'}" @click="tab='queues'">Queues</button>
+            <button class="tab" :class="{active: tab==='metrics'}" @click="tab='metrics'">Metrics</button>
+            <button class="tab" :class="{active: tab==='gc'}" @click="tab='gc'; fetchGcStatus()">GC &amp; Maintenance</button>
+            <button class="tab" :class="{active: tab==='publish'}" @click="tab='publish'">Quick Publish</button>
+        </div>
+
+        <!-- TAB: QUEUES -->
+        <div v-show="tab==='queues'">
+
+            <!-- Create Queue -->
+            <div class="panel" style="margin-bottom:1.5rem;">
+                <div class="panel-header">
+                    <h2>➕ Create Queue</h2>
                 </div>
-                <div class="section-content">
+                <div class="panel-body">
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Queue Name</label>
-                            <input v-model="newQueue.name" type="text" placeholder="Enter queue name">
+                            <label>Name</label>
+                            <input v-model="newQueue.name" placeholder="my-queue">
                         </div>
-                        <div class="form-group">
+                        <div class="form-group" style="max-width:110px;">
                             <label>Durable</label>
                             <select v-model="newQueue.durable">
                                 <option :value="true">Yes</option>
@@ -289,218 +296,445 @@
                         </div>
                         <div class="form-group">
                             <label>Dead Letter Queue</label>
-                            <input v-model="newQueue.deadLetterQueue" type="text" placeholder="Optional DLQ name">
+                            <input v-model="newQueue.dlq" placeholder="optional">
                         </div>
-                        <div class="form-group">
+                        <div class="form-group" style="max-width:120px;">
                             <label>TTL (ms)</label>
-                            <input v-model="newQueue.defaultTtlMs" type="number" placeholder="Optional TTL">
+                            <input v-model.number="newQueue.ttl" type="number" placeholder="—">
                         </div>
-                        <div class="form-group">
-                            <button @click="createQueue" class="btn btn-success">Create Queue</button>
+                        <div class="form-group" style="flex:0;">
+                            <label>&nbsp;</label>
+                            <button class="btn btn-accent" @click="createQueue">Create</button>
                         </div>
                     </div>
-                    <div v-if="createMessage" :class="createMessage.type === 'error' ? 'error' : ''" style="margin-top: 1rem; padding: 0.5rem; border-radius: 4px; background: #d4edda; color: #155724;">
-                        {{ createMessage.text }}
-                    </div>
+                    <transition name="fade">
+                        <div v-if="toast" class="toast" :class="toast.type" style="margin-top:1rem;">
+                            {{ toast.type === 'success' ? '✓' : '✗' }} {{ toast.text }}
+                        </div>
+                    </transition>
                 </div>
             </div>
-            
+
             <!-- Queues Table -->
-            <div class="section">
-                <div class="section-header">
-                    <h2>Queues</h2>
-                    <div class="refresh-info">
-                        Last updated: {{ lastUpdate }}
-                        <button @click="refreshData" class="btn btn-primary" style="margin-left: 1rem;">Refresh</button>
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Queues <span style="color:var(--text-dim); font-weight:400;">({{ (stats?.queues||[]).length }})</span></h2>
+                    <div style="display:flex;align-items:center;gap:.7rem;">
+                        <span class="idle-text">Auto-refresh 5s</span>
+                        <button class="btn btn-sm" @click="refresh">↻ Refresh</button>
                     </div>
                 </div>
-                <div class="section-content">
-                    <div v-if="loading" class="loading">
-                        Loading queues...
-                    </div>
-                    <div v-else-if="error" class="error">
-                        {{ error }}
-                    </div>
-                    <table v-else class="queue-table">
+                <div class="panel-body" style="padding:0;">
+                    <div v-if="loading" class="empty-state">Loading...</div>
+                    <div v-else-if="fetchError" class="toast error" style="margin:1rem;">{{ fetchError }}</div>
+                    <table v-else-if="(stats?.queues||[]).length" class="tbl">
                         <thead>
                             <tr>
                                 <th>Name</th>
                                 <th>Type</th>
                                 <th>Pending</th>
                                 <th>In-Flight</th>
-                                <th>Actions</th>
+                                <th>Volume</th>
+                                <th>Idle</th>
+                                <th style="text-align:right;">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="queue in stats?.queues || []" :key="queue.name">
-                                <td>
-                                    <strong>{{ queue.name }}</strong>
+                            <tr v-for="q in sortedQueues" :key="q.name">
+                                <td><strong class="mono">{{ q.name }}</strong></td>
+                                <td><span class="badge" :class="q.durable?'durable':'transient'">{{ q.durable ? '● Durable' : '○ Transient' }}</span></td>
+                                <td class="mono">{{ q.pendingMessages.toLocaleString() }}</td>
+                                <td class="mono">{{ q.inFlightMessages.toLocaleString() }}</td>
+                                <td style="min-width:90px;">
+                                    <div class="bar-wrap">
+                                        <div class="bar-fill green" :style="{ width: barPercent(q.pendingMessages + q.inFlightMessages) + '%' }"></div>
+                                    </div>
                                 </td>
-                                <td>
-                                    <span class="badge" :class="queue.durable ? 'durable' : 'transient'">
-                                        {{ queue.durable ? 'Durable' : 'Transient' }}
-                                    </span>
-                                </td>
-                                <td>{{ queue.pendingMessages }}</td>
-                                <td>{{ queue.inFlightMessages }}</td>
-                                <td>
-                                    <button @click="purgeQueue(queue.name)" class="btn btn-danger" style="margin-right: 0.5rem;">
-                                        Purge
-                                    </button>
-                                </td>
-                            </tr>
-                            <tr v-if="!stats?.queues?.length">
-                                <td colspan="5" style="text-align: center; color: #7f8c8d; padding: 2rem;">
-                                    No queues found. Create your first queue above.
+                                <td class="idle-text">{{ formatIdle(q.idleTimeMs) }}</td>
+                                <td style="text-align:right; white-space:nowrap;">
+                                    <button class="btn btn-sm btn-red" @click="purgeQueue(q.name)">Purge</button>
+                                    <button class="btn btn-sm btn-red" style="margin-left:.3rem;" @click="deleteQueue(q.name)">Delete</button>
                                 </td>
                             </tr>
                         </tbody>
                     </table>
+                    <div v-else class="empty-state">
+                        <div class="icon">📭</div>
+                        <p>No queues yet — create one above.</p>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <script>
-        const { createApp } = Vue;
-        
-        createApp({
-            data() {
-                return {
-                    health: null,
-                    stats: null,
-                    loading: true,
-                    error: null,
-                    lastUpdate: null,
-                    refreshInterval: null,
-                    newQueue: {
-                        name: '',
-                        durable: true,
-                        deadLetterQueue: '',
-                        defaultTtlMs: null
-                    },
-                    createMessage: null
-                };
-            },
-            computed: {
-                healthStatus() {
-                    if (!this.health) return 'status-warning';
-                    return this.health.status === 'healthy' ? 'status-healthy' : 'status-error';
-                },
-                totalMessages() {
-                    return this.stats?.queues?.reduce((sum, q) => sum + q.pendingMessages, 0) || 0;
-                },
-                totalInFlight() {
-                    return this.stats?.queues?.reduce((sum, q) => sum + q.inFlightMessages, 0) || 0;
-                }
-            },
-            methods: {
-                async fetchHealth() {
-                    try {
-                        const response = await axios.get('/health');
-                        this.health = response.data;
-                    } catch (error) {
-                        console.error('Failed to fetch health:', error);
-                        this.health = { status: 'error' };
-                    }
-                },
-                async fetchStats() {
-                    try {
-                        const response = await axios.get('/stats');
-                        this.stats = response.data;
-                        this.error = null;
-                    } catch (error) {
-                        console.error('Failed to fetch stats:', error);
-                        this.error = 'Failed to load queue statistics';
-                    } finally {
-                        this.loading = false;
-                        this.lastUpdate = new Date().toLocaleTimeString();
-                    }
-                },
-                async refreshData() {
-                    this.loading = true;
-                    await Promise.all([this.fetchHealth(), this.fetchStats()]);
-                },
-                async createQueue() {
-                    if (!this.newQueue.name.trim()) {
-                        this.createMessage = { type: 'error', text: 'Queue name is required' };
-                        return;
-                    }
-                    
-                    try {
-                        const payload = {
-                            name: this.newQueue.name.trim(),
-                            durable: this.newQueue.durable,
-                            deadLetterQueue: this.newQueue.deadLetterQueue.trim() || null,
-                            defaultTtlMs: this.newQueue.defaultTtlMs || null
-                        };
-                        
-                        const response = await axios.post('/queues/declare', payload);
-                        
-                        this.createMessage = { 
-                            type: 'success', 
-                            text: `Queue '${this.newQueue.name}' created successfully!` 
-                        };
-                        
-                        // Reset form
-                        this.newQueue = {
-                            name: '',
-                            durable: true,
-                            deadLetterQueue: '',
-                            defaultTtlMs: null
-                        };
-                        
-                        // Refresh data
-                        await this.fetchStats();
-                        
-                        // Clear message after 3 seconds
-                        setTimeout(() => {
-                            this.createMessage = null;
-                        }, 3000);
-                        
-                    } catch (error) {
-                        console.error('Failed to create queue:', error);
-                        this.createMessage = { 
-                            type: 'error', 
-                            text: error.response?.data?.error || 'Failed to create queue' 
-                        };
-                    }
-                },
-                async purgeQueue(queueName) {
-                    if (!confirm(`Are you sure you want to purge all messages from queue '${queueName}'?`)) {
-                        return;
-                    }
-                    
-                    try {
-                        await axios.post(`/queues/${queueName}/purge`);
-                        await this.fetchStats();
-                        alert(`Queue '${queueName}' purged successfully!`);
-                    } catch (error) {
-                        console.error('Failed to purge queue:', error);
-                        alert(`Failed to purge queue: ${error.response?.data?.error || error.message}`);
-                    }
-                },
-                startAutoRefresh() {
-                    this.refreshInterval = setInterval(() => {
-                        this.fetchHealth();
-                        this.fetchStats();
-                    }, 5000); // Refresh every 5 seconds
-                },
-                stopAutoRefresh() {
-                    if (this.refreshInterval) {
-                        clearInterval(this.refreshInterval);
-                        this.refreshInterval = null;
-                    }
-                }
-            },
-            async mounted() {
-                await this.refreshData();
-                this.startAutoRefresh();
-            },
-            beforeUnmount() {
-                this.stopAutoRefresh();
+        <!-- TAB: METRICS -->
+        <div v-show="tab==='metrics'">
+            <div class="grid-2">
+                <!-- Counters -->
+                <div class="panel">
+                    <div class="panel-header"><h2>📊 Counters</h2></div>
+                    <div class="panel-body" style="padding:0;">
+                        <table class="tbl">
+                            <thead><tr><th>Metric</th><th style="text-align:right;">Value</th></tr></thead>
+                            <tbody>
+                                <tr v-for="(v, k) in counters" :key="k">
+                                    <td class="mono">{{ k }}</td>
+                                    <td class="mono" style="text-align:right;">{{ Number(v).toLocaleString() }}</td>
+                                </tr>
+                                <tr v-if="!Object.keys(counters).length">
+                                    <td colspan="2" class="empty-state" style="padding:1.5rem;">No counters yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Timings -->
+                <div class="panel">
+                    <div class="panel-header"><h2>⏱ Timings</h2></div>
+                    <div class="panel-body" style="padding:0;">
+                        <table class="tbl">
+                            <thead><tr><th>Metric</th><th style="text-align:right;">Avg (ms)</th><th style="text-align:right;">Samples</th></tr></thead>
+                            <tbody>
+                                <tr v-for="t in timings" :key="t.name">
+                                    <td class="mono">{{ t.name }}</td>
+                                    <td class="mono" style="text-align:right;">{{ t.avg.toFixed(2) }}</td>
+                                    <td class="mono" style="text-align:right;">{{ t.count.toLocaleString() }}</td>
+                                </tr>
+                                <tr v-if="!timings.length">
+                                    <td colspan="3" class="empty-state" style="padding:1.5rem;">No timings yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Throughput sparkline -->
+            <div class="panel" style="margin-top:1.5rem;">
+                <div class="panel-header"><h2>📈 Published Messages (last 60 snapshots)</h2></div>
+                <div class="panel-body">
+                    <div class="sparkline-row" v-if="publishHistory.length">
+                        <div v-for="(v,i) in publishHistory" :key="i" class="spark-bar"
+                             :style="{ height: sparkHeight(v) + 'px' }"></div>
+                    </div>
+                    <div v-else class="empty-state" style="padding:1rem;">Collecting data...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: GC & MAINTENANCE -->
+        <div v-show="tab==='gc'">
+            <div class="grid-2">
+                <div class="panel">
+                    <div class="panel-header"><h2>♻️ GC Configuration</h2></div>
+                    <div class="panel-body">
+                        <dl class="kv-grid" v-if="gcStatus">
+                            <dt>Enabled</dt>       <dd>{{ gcStatus.enabled ? '✓ Yes' : '✗ No' }}</dd>
+                            <dt>Interval</dt>       <dd>{{ gcStatus.intervalSeconds }}s</dd>
+                            <dt>Idle Threshold</dt> <dd>{{ gcStatus.inactiveThresholdSeconds }}s</dd>
+                            <dt>Only Non-Durable</dt><dd>{{ gcStatus.onlyNonDurable ? 'Yes' : 'No' }}</dd>
+                            <dt>Max Queues</dt>     <dd>{{ gcStatus.maxQueues }}</dd>
+                            <dt>Total Queues</dt>   <dd>{{ gcStatus.totalQueues }}</dd>
+                            <dt>GC Runs</dt>        <dd class="mono">{{ gcStatus.gcRuns }}</dd>
+                            <dt>Queues Removed</dt> <dd class="mono">{{ gcStatus.totalQueuesRemoved }}</dd>
+                        </dl>
+                        <div v-else class="empty-state" style="padding:1rem;">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>🗑️ Inactive Queues</h2>
+                        <button class="btn btn-sm btn-red" @click="forceGc">Force GC</button>
+                    </div>
+                    <div class="panel-body" style="padding:0;">
+                        <table class="tbl" v-if="inactiveQueues.length">
+                            <thead><tr><th>Queue</th><th>Durable</th><th style="text-align:right;">Idle (s)</th></tr></thead>
+                            <tbody>
+                                <tr v-for="q in inactiveQueues" :key="q.name">
+                                    <td class="mono">{{ q.name }}</td>
+                                    <td><span class="badge" :class="q.durable?'durable':'transient'">{{ q.durable ? 'Yes':'No' }}</span></td>
+                                    <td class="mono" style="text-align:right;">{{ q.idleTimeSeconds.toFixed(0) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div v-else class="empty-state" style="padding:1.5rem;">
+                            <div class="icon">✨</div>
+                            <p>All queues are active</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: QUICK PUBLISH -->
+        <div v-show="tab==='publish'">
+            <div class="panel">
+                <div class="panel-header"><h2>📤 Publish Message via HTTP</h2></div>
+                <div class="panel-body">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Queue</label>
+                            <select v-model="pub.queue">
+                                <option value="" disabled>Select queue</option>
+                                <option v-for="q in (stats?.queues||[])" :key="q.name" :value="q.name">{{ q.name }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="max-width:110px;">
+                            <label>Persistent</label>
+                            <select v-model="pub.persistent">
+                                <option :value="true">Yes</option>
+                                <option :value="false">No</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="max-width:120px;">
+                            <label>TTL (ms)</label>
+                            <input v-model.number="pub.ttl" type="number" placeholder="—">
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top:1rem;">
+                        <label>Message Body</label>
+                        <textarea v-model="pub.body" rows="4" style="width:100%;padding:.6rem .8rem;font-size:.84rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;resize:vertical;font-family:inherit;" placeholder='{"hello": "world"}'></textarea>
+                    </div>
+                    <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;">
+                        <button class="btn btn-accent" @click="publishMessage">Publish</button>
+                        <transition name="fade">
+                            <span v-if="pubResult" :style="{color: pubResult.ok ? 'var(--green)':'var(--red)', fontSize:'.82rem'}">
+                                {{ pubResult.ok ? '✓ ' + pubResult.text : '✗ ' + pubResult.text }}
+                            </span>
+                        </transition>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Consume preview -->
+            <div class="panel" style="margin-top:1.5rem;">
+                <div class="panel-header">
+                    <h2>📥 Peek Message (auto-ack)</h2>
+                    <div style="display:flex;gap:.5rem;align-items:center;">
+                        <select v-model="peek.queue" style="padding:.3rem .5rem;font-size:.8rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+                            <option value="" disabled>Queue</option>
+                            <option v-for="q in (stats?.queues||[])" :key="q.name" :value="q.name">{{ q.name }}</option>
+                        </select>
+                        <button class="btn btn-sm btn-blue" @click="peekMessage">Peek</button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div v-if="peek.result" class="mono" style="white-space:pre-wrap;word-break:break-all;background:var(--surface2);padding:1rem;border-radius:8px;max-height:200px;overflow:auto;">{{ peek.result }}</div>
+                    <div v-else class="empty-state" style="padding:1rem;">Select a queue and click Peek to read a message.</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+createApp({
+    data() {
+        return {
+            tab: 'queues',
+            health: null,
+            stats: null,
+            gcStatus: null,
+            inactiveQueues: [],
+            loading: true,
+            fetchError: null,
+            toast: null,
+            newQueue: { name:'', durable:true, dlq:'', ttl:null },
+            pub: { queue:'', body:'', persistent:false, ttl:null },
+            pubResult: null,
+            peek: { queue:'', result:null },
+            publishHistory: [],
+            _lastPublished: 0,
+            _interval: null,
+        };
+    },
+    computed: {
+        healthClass() {
+            if (!this.health) return 'degraded';
+            return this.health.status === 'healthy' ? 'healthy' : 'error';
+        },
+        totalPending() {
+            return this.stats?.queues?.reduce((s,q) => s + q.pendingMessages, 0) ?? 0;
+        },
+        totalInFlight() {
+            return this.stats?.queues?.reduce((s,q) => s + q.inFlightMessages, 0) ?? 0;
+        },
+        sortedQueues() {
+            return [...(this.stats?.queues || [])].sort((a,b) => a.name.localeCompare(b.name));
+        },
+        counters() {
+            const m = this.stats?.metrics || {};
+            const out = {};
+            for (const [k,v] of Object.entries(m)) {
+                if (k.startsWith('counter.')) out[k.replace('counter.','')] = v;
             }
-        }).mount('#app');
-    </script>
+            return out;
+        },
+        timings() {
+            const m = this.stats?.metrics || {};
+            const map = {};
+            for (const [k,v] of Object.entries(m)) {
+                if (!k.startsWith('timing.')) continue;
+                const parts = k.replace('timing.','').split('.');
+                const suffix = parts.pop();
+                const name = parts.join('.');
+                if (!map[name]) map[name] = { name, avg:0, count:0 };
+                if (suffix === 'avg_ms') map[name].avg = v;
+                if (suffix === 'count') map[name].count = v;
+            }
+            return Object.values(map);
+        },
+    },
+    methods: {
+        metricCounter(name) {
+            const v = this.stats?.metrics?.['counter.' + name];
+            return v != null ? Number(v).toLocaleString() : '0';
+        },
+        formatUptime(u) {
+            if (!u) return '';
+            const h = Math.floor((u.totalSeconds || 0) / 3600);
+            const m = Math.floor(((u.totalSeconds || 0) % 3600) / 60);
+            const s = Math.floor((u.totalSeconds || 0) % 60);
+            if (u.days > 0) return `${u.days}d ${u.hours}h ${u.minutes}m`;
+            if (h > 0) return `${h}h ${m}m`;
+            return `${m}m ${s}s`;
+        },
+        formatIdle(ms) {
+            if (ms == null) return '—';
+            const s = ms / 1000;
+            if (s < 60) return s.toFixed(0) + 's';
+            if (s < 3600) return (s/60).toFixed(1) + 'm';
+            return (s/3600).toFixed(1) + 'h';
+        },
+        barPercent(v) {
+            const max = Math.max(...(this.stats?.queues||[]).map(q => q.pendingMessages + q.inFlightMessages), 1);
+            return Math.min(100, (v / max) * 100);
+        },
+        sparkHeight(v) {
+            const max = Math.max(...this.publishHistory, 1);
+            return Math.max(2, (v / max) * 28);
+        },
+        async fetchHealth() {
+            try { this.health = (await axios.get('/health')).data; }
+            catch { this.health = { status:'error' }; }
+        },
+        async fetchStats() {
+            try {
+                this.stats = (await axios.get('/stats')).data;
+                this.fetchError = null;
+                const cur = this.stats?.metrics?.['counter.messages.published.total'] ?? 0;
+                const delta = this._lastPublished ? Math.max(0, cur - this._lastPublished) : 0;
+                this._lastPublished = cur;
+                this.publishHistory.push(delta);
+                if (this.publishHistory.length > 60) this.publishHistory.shift();
+            } catch(e) {
+                this.fetchError = 'Failed to load stats';
+            } finally {
+                this.loading = false;
+            }
+        },
+        async fetchGcStatus() {
+            try {
+                this.gcStatus = (await axios.get('/queues/gc/status')).data;
+                this.inactiveQueues = ((await axios.get('/queues/inactive')).data).queues || [];
+            } catch {}
+        },
+        async refresh() {
+            this.loading = true;
+            await Promise.all([this.fetchHealth(), this.fetchStats()]);
+        },
+        showToast(type, text) {
+            this.toast = { type, text };
+            setTimeout(() => this.toast = null, 3500);
+        },
+        async createQueue() {
+            const n = this.newQueue.name.trim();
+            if (!n) return this.showToast('error','Queue name is required');
+            try {
+                await axios.post('/queues/declare', {
+                    name: n,
+                    durable: this.newQueue.durable,
+                    deadLetterQueue: this.newQueue.dlq.trim() || null,
+                    defaultTtlMs: this.newQueue.ttl || null
+                });
+                this.showToast('success', `Queue '${n}' created`);
+                this.newQueue = { name:'', durable:true, dlq:'', ttl:null };
+                await this.fetchStats();
+            } catch(e) {
+                this.showToast('error', e.response?.data?.error || 'Failed to create queue');
+            }
+        },
+        async purgeQueue(name) {
+            if (!confirm(`Purge all messages from '${name}'?`)) return;
+            try {
+                await axios.post(`/queues/${name}/purge`);
+                this.showToast('success', `'${name}' purged`);
+                await this.fetchStats();
+            } catch(e) {
+                this.showToast('error', e.response?.data?.error || 'Purge failed');
+            }
+        },
+        async deleteQueue(name) {
+            if (!confirm(`DELETE queue '${name}'? This cannot be undone.`)) return;
+            try {
+                await axios.delete(`/queues/${name}`);
+                this.showToast('success', `'${name}' deleted`);
+                await this.fetchStats();
+            } catch(e) {
+                this.showToast('error', e.response?.data?.error || 'Delete failed');
+            }
+        },
+        async forceGc() {
+            try {
+                const r = (await axios.post('/queues/gc')).data;
+                this.showToast('success', `GC done — removed ${r.removedQueues} queues`);
+                await this.fetchGcStatus();
+                await this.fetchStats();
+            } catch(e) {
+                this.showToast('error', e.response?.data?.error || 'GC failed');
+            }
+        },
+        async publishMessage() {
+            if (!this.pub.queue) return this.showToast('error','Select a queue');
+            if (!this.pub.body.trim()) return this.showToast('error','Message body is required');
+            try {
+                const r = (await axios.post(`/queues/${this.pub.queue}/publish`, {
+                    message: this.pub.body,
+                    persistent: this.pub.persistent,
+                    ttlMs: this.pub.ttl || null,
+                })).data;
+                this.pubResult = { ok:true, text: `Published (${r.messageId})` };
+                setTimeout(() => this.pubResult = null, 4000);
+                await this.fetchStats();
+            } catch(e) {
+                this.pubResult = { ok:false, text: e.response?.data?.error || 'Publish failed' };
+            }
+        },
+        async peekMessage() {
+            if (!this.peek.queue) return;
+            try {
+                const r = (await axios.get(`/queues/${this.peek.queue}/consume`)).data;
+                this.peek.result = r.message ? JSON.stringify(r, null, 2) : '(no messages available)';
+            } catch(e) {
+                this.peek.result = 'Error: ' + (e.response?.data?.error || e.message);
+            }
+        },
+    },
+    async mounted() {
+        await this.refresh();
+        this._interval = setInterval(() => {
+            this.fetchHealth();
+            this.fetchStats();
+        }, 5000);
+    },
+    beforeUnmount() {
+        clearInterval(this._interval);
+    }
+}).mount('#app');
+</script>
 </body>
 </html>
