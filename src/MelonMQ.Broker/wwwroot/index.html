@@ -1,230 +1,506 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MelonMQ — Dashboard</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #0f1117;
-            --surface: #1a1d27;
-            --surface2: #232631;
-            --border: #2e3140;
-            --text: #e4e6ef;
-            --text-dim: #8b8fa3;
-            --accent: #6ee7b7;
-            --accent2: #67e8f9;
-            --blue: #60a5fa;
-            --purple: #a78bfa;
-            --orange: #fbbf24;
-            --red: #f87171;
-            --green: #6ee7b7;
-            --pink: #f472b6;
-            --radius: 12px;
-            --shadow: 0 2px 12px rgba(0,0,0,.35);
+            --bg: #f8f3e9;
+            --bg-accent: #e8f7f2;
+            --surface: #fffdf9;
+            --surface2: #f5efe2;
+            --border: #ded1bd;
+            --text: #233036;
+            --text-dim: #6b7280;
+            --accent: #0f766e;
+            --accent2: #0284c7;
+            --blue: #1d4ed8;
+            --orange: #b45309;
+            --red: #b91c1c;
+            --green: #047857;
+            --pink: #be185d;
+            --radius: 16px;
+            --shadow: 0 10px 28px rgba(34, 54, 62, 0.12);
         }
 
         * { margin:0; padding:0; box-sizing:border-box; }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg);
+            font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
             color: var(--text);
             min-height: 100vh;
+            background:
+                radial-gradient(1200px 600px at -10% -10%, rgba(2, 132, 199, 0.12), transparent 60%),
+                radial-gradient(1000px 500px at 120% 5%, rgba(15, 118, 110, 0.15), transparent 60%),
+                linear-gradient(180deg, var(--bg), var(--bg-accent));
         }
 
-        /* Header */
         .header {
-            background: var(--surface);
+            background: rgba(255, 253, 249, 0.9);
             border-bottom: 1px solid var(--border);
             padding: 0 2rem;
-            height: 60px;
+            min-height: 72px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            position: sticky; top:0; z-index:50;
-            backdrop-filter: blur(12px);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            backdrop-filter: blur(10px);
         }
-        .logo { display:flex; align-items:center; gap:.6rem; font-size:1.15rem; font-weight:700; letter-spacing:-.02em; }
-        .logo svg { width:28px; height:28px; }
-        .header-right { display:flex; align-items:center; gap:1.2rem; }
+
+        .logo {
+            display:flex;
+            align-items:center;
+            gap:.65rem;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size:1.22rem;
+            font-weight:700;
+            letter-spacing:-.02em;
+        }
+
+        .logo svg { width:30px; height:30px; }
+
+        .header-right {
+            display:flex;
+            align-items:center;
+            gap:.75rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
         .api-key-input {
-            width: 220px;
-            padding: .35rem .55rem;
-            font-size: .75rem;
+            width: 230px;
+            padding: .42rem .65rem;
+            font-size: .76rem;
             background: var(--surface2);
             color: var(--text);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 10px;
         }
+
         .api-key-input::placeholder { color: var(--text-dim); }
-        .api-key-input:focus { outline: none; border-color: var(--accent); }
-        .status-pill {
-            display:flex; align-items:center; gap:.4rem;
-            background: var(--surface2); border:1px solid var(--border);
-            padding: .3rem .75rem; border-radius:9999px; font-size:.78rem; font-weight:500;
+
+        .api-key-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
         }
-        .status-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-        .status-dot.healthy { background:var(--green); box-shadow: 0 0 6px var(--green); }
-        .status-dot.degraded { background:var(--orange); box-shadow: 0 0 6px var(--orange); }
-        .status-dot.error { background:var(--red); box-shadow: 0 0 6px var(--red); }
+
+        .status-pill {
+            display:flex;
+            align-items:center;
+            gap:.4rem;
+            background: #ffffff;
+            border:1px solid var(--border);
+            padding: .36rem .8rem;
+            border-radius:9999px;
+            font-size:.78rem;
+            font-weight:600;
+            text-transform: capitalize;
+        }
+
+        .status-dot {
+            width:8px;
+            height:8px;
+            border-radius:50%;
+            flex-shrink:0;
+        }
+
+        .status-dot.healthy { background:var(--green); box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.15); }
+        .status-dot.degraded { background:var(--orange); box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.16); }
+        .status-dot.error { background:var(--red); box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.16); }
         .uptime-text { color:var(--text-dim); font-size:.78rem; }
 
-        /* Container */
-        .container { max-width:1380px; margin:0 auto; padding:1.5rem 2rem 3rem; }
+        .container {
+            max-width:1400px;
+            margin:0 auto;
+            padding:1.6rem 2rem 3rem;
+        }
 
-        /* Metric Cards */
+        .hero {
+            background: linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(2, 132, 199, 0.11));
+            border: 1px solid rgba(15, 118, 110, 0.2);
+            border-radius: calc(var(--radius) + 4px);
+            padding: 1.2rem 1.4rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            box-shadow: var(--shadow);
+            animation: riseIn .5s ease;
+        }
+
+        .hero-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.18rem;
+            font-weight: 700;
+            margin-bottom: .2rem;
+        }
+
+        .hero-sub {
+            color: var(--text-dim);
+            font-size: .86rem;
+        }
+
+        .hero-actions {
+            display: flex;
+            align-items: center;
+            gap: .55rem;
+            flex-wrap: wrap;
+        }
+
         .metrics-row {
             display:grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px,1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px,1fr));
             gap: 1rem;
             margin-bottom: 1.5rem;
         }
+
         .metric-card {
             background:var(--surface);
             border:1px solid var(--border);
             border-radius:var(--radius);
-            padding:1.25rem 1.4rem;
-            display:flex; flex-direction:column; gap:.35rem;
-            position:relative; overflow:hidden;
-            transition: border-color .2s, transform .15s;
+            padding:1.05rem 1.2rem;
+            display:flex;
+            flex-direction:column;
+            gap:.32rem;
+            position:relative;
+            overflow:hidden;
+            transition: border-color .2s, transform .15s, box-shadow .2s;
+            box-shadow: 0 2px 12px rgba(22, 43, 53, 0.07);
+            animation: riseIn .45s ease both;
         }
-        .metric-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+
+        .metric-card::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            opacity: .7;
+        }
+
+        .metric-card:hover {
+            border-color: rgba(15, 118, 110, 0.45);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+        }
+
+        .metric-card:nth-child(2) { animation-delay: .03s; }
+        .metric-card:nth-child(3) { animation-delay: .06s; }
+        .metric-card:nth-child(4) { animation-delay: .09s; }
+        .metric-card:nth-child(5) { animation-delay: .12s; }
+        .metric-card:nth-child(6) { animation-delay: .15s; }
+        .metric-card:nth-child(7) { animation-delay: .18s; }
+        .metric-card:nth-child(8) { animation-delay: .21s; }
+        .metric-card:nth-child(9) { animation-delay: .24s; }
+
         .metric-card .icon {
-            position:absolute; top:1rem; right:1.2rem;
-            width:38px; height:38px; border-radius:10px;
-            display:flex; align-items:center; justify-content:center;
-            font-size:1.1rem; opacity:.85;
+            position:absolute;
+            top:.92rem;
+            right:1rem;
+            width:36px;
+            height:36px;
+            border-radius:10px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            font-size:1rem;
+            opacity:.9;
         }
-        .metric-card .icon.q   { background: rgba(248,113,113,.12); color:var(--red); }
-        .metric-card .icon.c   { background: rgba(251,191,36,.12);  color:var(--orange); }
-        .metric-card .icon.m   { background: rgba(110,231,183,.12); color:var(--green); }
-        .metric-card .icon.f   { background: rgba(167,139,250,.12); color:var(--purple); }
-        .metric-card .icon.pub { background: rgba(96,165,250,.12);  color:var(--blue); }
-        .metric-card .icon.con { background: rgba(244,114,182,.12); color:var(--pink); }
-        .metric-label { font-size:.78rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; font-weight:500; }
-        .metric-value { font-size:1.75rem; font-weight:700; letter-spacing:-.03em; line-height:1.1; }
-        .metric-sub { font-size:.72rem; color:var(--text-dim); }
 
-        /* Tabs */
-        .tabs { display:flex; gap:0; margin-bottom:1.5rem; border-bottom:1px solid var(--border); }
+        .metric-card .icon.q { background: rgba(185, 28, 28, .12); color:var(--red); }
+        .metric-card .icon.c { background: rgba(180, 83, 9, .14);  color:var(--orange); }
+        .metric-card .icon.m { background: rgba(4, 120, 87, .14); color:var(--green); }
+        .metric-card .icon.f { background: rgba(2, 132, 199, .13); color:var(--accent2); }
+        .metric-card .icon.pub { background: rgba(29, 78, 216, .12); color:var(--blue); }
+        .metric-card .icon.con { background: rgba(190, 24, 93, .11); color:var(--pink); }
+        .metric-card .icon.rate { background: rgba(15, 118, 110, .14); color: var(--accent); }
+        .metric-card .icon.err { background: rgba(185, 28, 28, .11); color: var(--red); }
+
+        .metric-label {
+            font-size:.72rem;
+            color:var(--text-dim);
+            text-transform:uppercase;
+            letter-spacing:.08em;
+            font-weight:600;
+        }
+
+        .metric-value {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size:1.62rem;
+            font-weight:700;
+            letter-spacing:-.03em;
+            line-height:1.1;
+        }
+
+        .metric-sub {
+            font-size:.74rem;
+            color:var(--text-dim);
+        }
+
+        .tabs {
+            display:flex;
+            gap:.3rem;
+            margin-bottom:1.2rem;
+            flex-wrap: wrap;
+        }
+
         .tab {
-            padding:.7rem 1.3rem; font-size:.85rem; font-weight:500; cursor:pointer;
-            color:var(--text-dim); border-bottom:2px solid transparent;
-            transition: color .2s, border-color .2s;
-            background:none; border-top:none; border-left:none; border-right:none;
+            padding:.58rem 1rem;
+            font-size:.83rem;
+            font-weight:600;
+            cursor:pointer;
+            color:var(--text-dim);
+            border:1px solid var(--border);
+            border-radius: 10px;
+            transition: color .2s, border-color .2s, background .2s;
+            background:var(--surface);
         }
-        .tab:hover { color:var(--text); }
-        .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
 
-        /* Panel */
+        .tab:hover { color:var(--text); border-color: rgba(15, 118, 110, 0.4); }
+        .tab.active { color:#fff; border-color:var(--accent); background: linear-gradient(135deg, var(--accent), #0b8a80); }
+
         .panel {
             background:var(--surface);
             border:1px solid var(--border);
             border-radius:var(--radius);
             margin-bottom:1.5rem;
             overflow:hidden;
+            box-shadow: 0 4px 16px rgba(35, 45, 58, 0.08);
+            animation: riseIn .42s ease;
         }
+
         .panel-header {
-            padding:1rem 1.4rem;
-            display:flex; align-items:center; justify-content:space-between;
+            padding:1rem 1.25rem;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
             border-bottom:1px solid var(--border);
             background: var(--surface2);
+            gap: .7rem;
+            flex-wrap: wrap;
         }
-        .panel-header h2 { font-size:.95rem; font-weight:600; }
-        .panel-body { padding:1.4rem; }
 
-        /* Table */
+        .panel-header h2 {
+            font-size:.98rem;
+            font-weight:700;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        .panel-body { padding:1.2rem; }
+
         .tbl { width:100%; border-collapse:collapse; }
-        .tbl th, .tbl td { text-align:left; padding:.7rem .9rem; font-size:.84rem; }
-        .tbl th { color:var(--text-dim); font-weight:500; text-transform:uppercase; font-size:.72rem; letter-spacing:.04em; border-bottom:1px solid var(--border); }
-        .tbl td { border-bottom:1px solid var(--border); }
+
+        .tbl th,
+        .tbl td {
+            text-align:left;
+            padding:.68rem .86rem;
+            font-size:.83rem;
+        }
+
+        .tbl th {
+            color:var(--text-dim);
+            font-weight:600;
+            text-transform:uppercase;
+            font-size:.7rem;
+            letter-spacing:.06em;
+            border-bottom:1px solid var(--border);
+        }
+
+        .tbl td { border-bottom:1px solid rgba(222, 209, 189, 0.8); }
+
         .tbl tbody tr { transition: background .15s; }
-        .tbl tbody tr:hover { background: var(--surface2); }
+        .tbl tbody tr:hover { background: rgba(15, 118, 110, 0.06); }
         .tbl tbody tr:last-child td { border-bottom:none; }
 
-        /* Badge */
         .badge {
-            display:inline-flex; align-items:center; gap:.3rem;
-            padding:.2rem .55rem; border-radius:6px;
-            font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
+            display:inline-flex;
+            align-items:center;
+            gap:.3rem;
+            padding:.2rem .55rem;
+            border-radius:9999px;
+            font-size:.68rem;
+            font-weight:700;
+            text-transform:uppercase;
+            letter-spacing:.03em;
         }
-        .badge.durable  { background:rgba(110,231,183,.12); color:var(--green); }
-        .badge.transient { background:rgba(248,113,113,.12); color:var(--red); }
 
-        /* Progress bar */
-        .bar-wrap { width:100%; height:6px; background:var(--surface2); border-radius:3px; overflow:hidden; }
-        .bar-fill { height:100%; border-radius:3px; transition:width .5s ease; }
-        .bar-fill.green { background: linear-gradient(90deg, var(--green), var(--accent2)); }
+        .badge.durable  { background:rgba(4, 120, 87, .14); color:var(--green); }
+        .badge.transient { background:rgba(185, 28, 28, .12); color:var(--red); }
 
-        /* Buttons */
+        .bar-wrap { width:100%; height:7px; background:rgba(2, 132, 199, 0.12); border-radius:9999px; overflow:hidden; }
+        .bar-fill { height:100%; border-radius:9999px; transition:width .5s ease; }
+        .bar-fill.green { background: linear-gradient(90deg, #0f766e, #0ea5e9); }
+
         .btn {
-            display:inline-flex; align-items:center; gap:.35rem;
-            padding:.45rem .9rem; border:1px solid var(--border); border-radius:8px;
-            font-size:.8rem; font-weight:500; cursor:pointer;
-            background:var(--surface2); color:var(--text);
+            display:inline-flex;
+            align-items:center;
+            gap:.32rem;
+            padding:.45rem .9rem;
+            border:1px solid var(--border);
+            border-radius:10px;
+            font-size:.8rem;
+            font-weight:600;
+            cursor:pointer;
+            background:#fff;
+            color:var(--text);
+            text-decoration: none;
             transition: background .15s, border-color .15s, transform .1s;
         }
-        .btn:hover { background:var(--border); transform:translateY(-1px); }
-        .btn:active { transform:translateY(0); }
-        .btn-accent { background:rgba(110,231,183,.12); border-color:rgba(110,231,183,.25); color:var(--green); }
-        .btn-accent:hover { background:rgba(110,231,183,.2); }
-        .btn-red { background:rgba(248,113,113,.1); border-color:rgba(248,113,113,.25); color:var(--red); }
-        .btn-red:hover { background:rgba(248,113,113,.2); }
-        .btn-blue { background:rgba(96,165,250,.1); border-color:rgba(96,165,250,.25); color:var(--blue); }
-        .btn-blue:hover { background:rgba(96,165,250,.2); }
-        .btn-sm { padding:.3rem .6rem; font-size:.73rem; }
 
-        /* Form */
+        .btn:hover {
+            background: var(--surface2);
+            border-color: rgba(15, 118, 110, 0.35);
+            transform:translateY(-1px);
+        }
+
+        .btn:active { transform:translateY(0); }
+        .btn-accent { background:rgba(15, 118, 110, .11); border-color:rgba(15, 118, 110, .25); color:var(--accent); }
+        .btn-accent:hover { background:rgba(15, 118, 110, .18); }
+        .btn-red { background:rgba(185, 28, 28, .09); border-color:rgba(185, 28, 28, .25); color:var(--red); }
+        .btn-red:hover { background:rgba(185, 28, 28, .16); }
+        .btn-blue { background:rgba(29, 78, 216, .1); border-color:rgba(29, 78, 216, .25); color:var(--blue); }
+        .btn-blue:hover { background:rgba(29, 78, 216, .16); }
+        .btn-sm { padding:.32rem .62rem; font-size:.73rem; }
+
         .form-row { display:flex; gap:1rem; flex-wrap:wrap; align-items:end; }
         .form-group { flex:1; min-width:140px; }
-        .form-group label { display:block; margin-bottom:.3rem; font-size:.75rem; color:var(--text-dim); font-weight:500; text-transform:uppercase; letter-spacing:.04em; }
-        .form-group input, .form-group select {
-            width:100%; padding:.5rem .7rem; font-size:.84rem;
-            background:var(--surface2); color:var(--text);
-            border:1px solid var(--border); border-radius:8px;
-            transition: border-color .2s;
-        }
-        .form-group input::placeholder { color:var(--text-dim); opacity:.6; }
-        .form-group input:focus, .form-group select:focus { outline:none; border-color:var(--accent); }
 
-        /* Toast */
+        .form-group label {
+            display:block;
+            margin-bottom:.32rem;
+            font-size:.72rem;
+            color:var(--text-dim);
+            font-weight:600;
+            text-transform:uppercase;
+            letter-spacing:.05em;
+        }
+
+        .form-group input,
+        .form-group select,
+        .counter-filter,
+        .publish-body {
+            width:100%;
+            padding:.52rem .72rem;
+            font-size:.84rem;
+            background:var(--surface2);
+            color:var(--text);
+            border:1px solid var(--border);
+            border-radius:10px;
+            transition: border-color .2s, box-shadow .2s;
+        }
+
+        .form-group input::placeholder,
+        .counter-filter::placeholder,
+        .publish-body::placeholder {
+            color:var(--text-dim);
+            opacity:.7;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .counter-filter:focus,
+        .publish-body:focus {
+            outline:none;
+            border-color:var(--accent);
+            box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+        }
+
         .toast {
-            padding:.6rem 1rem; border-radius:8px; font-size:.82rem; font-weight:500;
-            display:flex; align-items:center; gap:.5rem;
+            padding:.6rem 1rem;
+            border-radius:10px;
+            font-size:.82rem;
+            font-weight:600;
+            display:flex;
+            align-items:center;
+            gap:.5rem;
             animation: slideIn .3s ease;
         }
-        .toast.success { background:rgba(110,231,183,.12); color:var(--green); border:1px solid rgba(110,231,183,.25); }
-        .toast.error   { background:rgba(248,113,113,.12); color:var(--red); border:1px solid rgba(248,113,113,.25); }
 
-        @keyframes slideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+        .toast.success { background:rgba(4, 120, 87, .12); color:var(--green); border:1px solid rgba(4, 120, 87, .26); }
+        .toast.error   { background:rgba(185, 28, 28, .11); color:var(--red); border:1px solid rgba(185, 28, 28, .24); }
 
-        /* Sparkline */
-        .sparkline-row { display:flex; gap:3px; align-items:end; height:28px; }
+        .hint-grid {
+            display: grid;
+            gap: .8rem;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .hint {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #ffffff;
+            padding: .8rem .9rem;
+        }
+
+        .hint h3 {
+            font-size: .86rem;
+            margin-bottom: .3rem;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        .hint p {
+            font-size: .78rem;
+            color: var(--text-dim);
+            line-height: 1.4;
+        }
+
+        .sparkline-row { display:flex; gap:3px; align-items:end; height:36px; }
         .spark-bar {
-            flex:1; min-width:3px; border-radius:1.5px;
-            background: var(--accent); opacity:.6;
+            flex:1;
+            min-width:3px;
+            border-radius:2px;
+            background: linear-gradient(180deg, rgba(14, 165, 233, .75), rgba(15, 118, 110, .8));
             transition: height .3s ease;
         }
 
-        /* Misc */
-        .empty-state { text-align:center; padding:2.5rem 1rem; color:var(--text-dim); }
+        .empty-state { text-align:center; padding:2.2rem 1rem; color:var(--text-dim); }
         .empty-state .icon { font-size:2rem; margin-bottom:.5rem; opacity:.5; }
-        .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
-        @media(max-width:768px) {
-            .grid-2 { grid-template-columns:1fr; }
-            .metrics-row { grid-template-columns:repeat(2,1fr); }
-            .api-key-input { width: 160px; }
-        }
-        .mono { font-family:'SF Mono','Fira Code',monospace; font-size:.82rem; }
-        .idle-text { color:var(--text-dim); font-size:.78rem; }
+        .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:1.4rem; }
+
+        .mono { font-family:'SF Mono','Menlo','Monaco','Consolas',monospace; font-size:.81rem; }
+        .idle-text { color:var(--text-dim); font-size:.77rem; }
         .kv-grid { display:grid; grid-template-columns: auto 1fr; gap:.4rem 1.2rem; font-size:.82rem; }
         .kv-grid dt { color:var(--text-dim); }
-        .kv-grid dd { font-weight:500; }
+        .kv-grid dd { font-weight:600; }
         .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
         .fade-enter-from, .fade-leave-to { opacity:0; }
+
+        @keyframes slideIn {
+            from { opacity:0; transform:translateY(-8px); }
+            to { opacity:1; transform:translateY(0); }
+        }
+
+        @keyframes riseIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media(max-width: 1024px) {
+            .hint-grid { grid-template-columns: 1fr; }
+        }
+
+        @media(max-width:768px) {
+            .container { padding:1rem 1rem 2rem; }
+            .header { padding: .6rem 1rem; align-items: flex-start; }
+            .logo { font-size: 1.08rem; }
+            .header-right { width: 100%; justify-content: flex-start; }
+            .metrics-row { grid-template-columns:repeat(2,1fr); gap: .75rem; }
+            .grid-2 { grid-template-columns:1fr; }
+            .api-key-input { width: 100%; }
+            .hero { flex-direction: column; align-items: flex-start; }
+        }
     </style>
 </head>
 <body>
@@ -242,7 +518,9 @@
                 @change="applyAdminApiKey"
                 class="api-key-input"
                 placeholder="X-Api-Key (optional)">
-            <span class="uptime-text" v-if="stats?.uptime">⏱ {{ formatUptime(stats.uptime) }}</span>
+            <span class="uptime-text" v-if="stats?.uptime">Uptime: {{ formatUptime(stats.uptime) }}</span>
+            <span class="uptime-text" v-if="lastStatsAt">Atualizado {{ formatRelative(lastStatsAt) }}</span>
+            <a class="btn btn-sm" href="/metrics" target="_blank" rel="noopener">Abrir /metrics</a>
             <div class="status-pill">
                 <span class="status-dot" :class="healthClass"></span>
                 {{ health?.status || 'connecting' }}
@@ -252,37 +530,72 @@
 
     <div class="container">
 
+        <div class="hero">
+            <div>
+                <div class="hero-title">Painel Operacional MelonMQ</div>
+                <div class="hero-sub">Esta UI consome <strong>/stats</strong> e <strong>/health</strong> a cada 5s. Para Prometheus, use <strong>/metrics</strong>.</div>
+            </div>
+            <div class="hero-actions">
+                <button class="btn btn-accent" @click="refresh">Atualizar agora</button>
+                <span class="uptime-text">Polling: 5s</span>
+            </div>
+        </div>
+
         <!-- Top Metric Cards -->
         <div class="metrics-row">
             <div class="metric-card">
                 <div class="icon q">📦</div>
                 <span class="metric-label">Queues</span>
                 <span class="metric-value">{{ stats?.totalQueues ?? 0 }}</span>
+                <span class="metric-sub">Filas declaradas</span>
             </div>
             <div class="metric-card">
                 <div class="icon c">🔗</div>
                 <span class="metric-label">Connections</span>
                 <span class="metric-value">{{ stats?.connections ?? 0 }}</span>
+                <span class="metric-sub">Conexões TCP ativas</span>
             </div>
             <div class="metric-card">
                 <div class="icon m">💬</div>
                 <span class="metric-label">Pending</span>
                 <span class="metric-value">{{ totalPending }}</span>
+                <span class="metric-sub">Mensagens aguardando consumo</span>
             </div>
             <div class="metric-card">
                 <div class="icon f">🚀</div>
                 <span class="metric-label">In-Flight</span>
                 <span class="metric-value">{{ totalInFlight }}</span>
+                <span class="metric-sub">Em processamento (não ack)</span>
             </div>
             <div class="metric-card">
                 <div class="icon pub">📤</div>
                 <span class="metric-label">Published</span>
                 <span class="metric-value">{{ metricCounter('messages.published.total') }}</span>
+                <span class="metric-sub">Contador acumulado</span>
             </div>
             <div class="metric-card">
                 <div class="icon con">📥</div>
                 <span class="metric-label">Consumed</span>
                 <span class="metric-value">{{ metricCounter('messages.consumed.total') }}</span>
+                <span class="metric-sub">Contador acumulado</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon rate">⚡</div>
+                <span class="metric-label">Publish Rate</span>
+                <span class="metric-value">{{ formatRate(rates.publishedPerSec) }}</span>
+                <span class="metric-sub">Mensagens publicadas por segundo</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon rate">🌊</div>
+                <span class="metric-label">Consume Rate</span>
+                <span class="metric-value">{{ formatRate(rates.consumedPerSec) }}</span>
+                <span class="metric-sub">Mensagens consumidas por segundo</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon err">🧯</div>
+                <span class="metric-label">Errors</span>
+                <span class="metric-value">{{ metricCounter('errors.total') }}</span>
+                <span class="metric-sub">Falhas acumuladas de processamento</span>
             </div>
         </div>
 
@@ -389,27 +702,75 @@
 
         <!-- TAB: METRICS -->
         <div v-show="tab==='metrics'">
+            <div class="panel">
+                <div class="panel-header"><h2>🔎 Como ler as métricas</h2></div>
+                <div class="panel-body">
+                    <div class="hint-grid">
+                        <div class="hint">
+                            <h3>/stats (dashboard)</h3>
+                            <p>A interface usa <span class="mono">/stats</span> para exibir filas, contadores e timings em JSON, com atualização automática a cada 5 segundos.</p>
+                        </div>
+                        <div class="hint">
+                            <h3>/metrics (Prometheus)</h3>
+                            <p>Use <span class="mono">/metrics</span> para o formato Prometheus/OpenTelemetry. Ideal para Grafana, alertas e scraping externo.</p>
+                        </div>
+                        <div class="hint">
+                            <h3>Proteção de leitura</h3>
+                            <p>Se proteção estiver ativa, preencha <span class="mono">X-Api-Key</span> no topo para liberar <span class="mono">/health</span>, <span class="mono">/stats</span> e manutenção.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="metrics-row">
+                <div class="metric-card">
+                    <div class="icon rate">⏱</div>
+                    <span class="metric-label">Snapshot</span>
+                    <span class="metric-value">{{ stats ? 'Ativo' : 'Sem dados' }}</span>
+                    <span class="metric-sub">Último pull {{ formatRelative(lastStatsAt) }}</span>
+                </div>
+                <div class="metric-card">
+                    <div class="icon rate">📉</div>
+                    <span class="metric-label">Queue Pressure</span>
+                    <span class="metric-value">{{ queuePressurePercent.toFixed(1) }}%</span>
+                    <span class="metric-sub">Razão in-flight / backlog total</span>
+                </div>
+                <div class="metric-card">
+                    <div class="icon rate">📈</div>
+                    <span class="metric-label">Avg Publish Delta</span>
+                    <span class="metric-value">{{ publishDeltaAverage.toFixed(2) }}</span>
+                    <span class="metric-sub">Média por ciclo de 5s</span>
+                </div>
+                <div class="metric-card">
+                    <div class="icon err">⚠️</div>
+                    <span class="metric-label">Error Rate</span>
+                    <span class="metric-value">{{ formatRate(rates.errorsPerSec) }}</span>
+                    <span class="metric-sub">Erros por segundo</span>
+                </div>
+            </div>
+
             <div class="grid-2">
-                <!-- Counters -->
                 <div class="panel">
-                    <div class="panel-header"><h2>📊 Counters</h2></div>
+                    <div class="panel-header">
+                        <h2>📊 Counters</h2>
+                        <input class="counter-filter" v-model="counterFilter" placeholder="Filtrar metrica (ex.: queue, errors, cluster)">
+                    </div>
                     <div class="panel-body" style="padding:0;">
                         <table class="tbl">
                             <thead><tr><th>Metric</th><th style="text-align:right;">Value</th></tr></thead>
                             <tbody>
-                                <tr v-for="(v, k) in counters" :key="k">
-                                    <td class="mono">{{ k }}</td>
-                                    <td class="mono" style="text-align:right;">{{ Number(v).toLocaleString() }}</td>
+                                <tr v-for="entry in filteredCounterEntries" :key="entry[0]">
+                                    <td class="mono">{{ entry[0] }}</td>
+                                    <td class="mono" style="text-align:right;">{{ Number(entry[1]).toLocaleString() }}</td>
                                 </tr>
-                                <tr v-if="!Object.keys(counters).length">
-                                    <td colspan="2" class="empty-state" style="padding:1.5rem;">No counters yet</td>
+                                <tr v-if="!filteredCounterEntries.length">
+                                    <td colspan="2" class="empty-state" style="padding:1.5rem;">Nenhum contador para este filtro</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
 
-                <!-- Timings -->
                 <div class="panel">
                     <div class="panel-header"><h2>⏱ Timings</h2></div>
                     <div class="panel-body" style="padding:0;">
@@ -422,7 +783,7 @@
                                     <td class="mono" style="text-align:right;">{{ t.count.toLocaleString() }}</td>
                                 </tr>
                                 <tr v-if="!timings.length">
-                                    <td colspan="3" class="empty-state" style="padding:1.5rem;">No timings yet</td>
+                                    <td colspan="3" class="empty-state" style="padding:1.5rem;">Ainda sem timings coletados</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -430,15 +791,35 @@
                 </div>
             </div>
 
-            <!-- Throughput sparkline -->
-            <div class="panel" style="margin-top:1.5rem;">
-                <div class="panel-header"><h2>📈 Published Messages (last 60 snapshots)</h2></div>
-                <div class="panel-body">
-                    <div class="sparkline-row" v-if="publishHistory.length">
-                        <div v-for="(v,i) in publishHistory" :key="i" class="spark-bar"
-                             :style="{ height: sparkHeight(v) + 'px' }"></div>
+            <div class="grid-2" style="margin-top:1.4rem;">
+                <div class="panel">
+                    <div class="panel-header"><h2>🏁 Top filas por publicação</h2></div>
+                    <div class="panel-body" style="padding:0;">
+                        <table class="tbl" v-if="topPublishedQueues.length">
+                            <thead><tr><th>Queue</th><th style="text-align:right;">Published</th></tr></thead>
+                            <tbody>
+                                <tr v-for="q in topPublishedQueues" :key="q.queue">
+                                    <td class="mono">{{ q.queue }}</td>
+                                    <td class="mono" style="text-align:right;">{{ q.total.toLocaleString() }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div v-else class="empty-state" style="padding:1.5rem;">Sem dados por fila ainda</div>
                     </div>
-                    <div v-else class="empty-state" style="padding:1rem;">Collecting data...</div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>📈 Publicações por ciclo (até 60 snapshots)</h2>
+                        <span class="idle-text">Média: {{ publishDeltaAverage.toFixed(2) }}</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="sparkline-row" v-if="publishHistory.length">
+                            <div v-for="(v,i) in publishHistory" :key="i" class="spark-bar"
+                                 :style="{ height: sparkHeight(v) + 'px' }"></div>
+                        </div>
+                        <div v-else class="empty-state" style="padding:1rem;">Coletando snapshots...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -515,7 +896,7 @@
                     </div>
                     <div class="form-group" style="margin-top:1rem;">
                         <label>Message Body</label>
-                        <textarea v-model="pub.body" rows="4" style="width:100%;padding:.6rem .8rem;font-size:.84rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;resize:vertical;font-family:inherit;" placeholder='{"hello": "world"}'></textarea>
+                        <textarea v-model="pub.body" rows="4" class="publish-body" style="resize:vertical;font-family:inherit;" placeholder='{"hello": "world"}'></textarea>
                     </div>
                     <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;">
                         <button class="btn btn-accent" @click="publishMessage">Publish</button>
@@ -570,7 +951,15 @@ createApp({
             pubResult: null,
             peek: { queue:'', result:null },
             publishHistory: [],
-            _lastPublished: 0,
+            counterFilter: '',
+            lastStatsAt: null,
+            rates: {
+                publishedPerSec: 0,
+                consumedPerSec: 0,
+                errorsPerSec: 0,
+            },
+            _lastPublished: null,
+            _lastCounterSnapshot: null,
             _interval: null,
         };
     },
@@ -596,6 +985,32 @@ createApp({
             }
             return out;
         },
+        counterEntries() {
+            return Object.entries(this.counters).sort((a, b) => Number(b[1]) - Number(a[1]));
+        },
+        filteredCounterEntries() {
+            const f = this.counterFilter.trim().toLowerCase();
+            if (!f) return this.counterEntries;
+            return this.counterEntries.filter(([name]) => name.toLowerCase().includes(f));
+        },
+        topPublishedQueues() {
+            const prefix = 'messages.published.queue.';
+            return this.counterEntries
+                .filter(([name]) => name.startsWith(prefix))
+                .map(([name, total]) => ({ queue: name.slice(prefix.length), total: Number(total) }))
+                .sort((a, b) => b.total - a.total)
+                .slice(0, 8);
+        },
+        publishDeltaAverage() {
+            if (!this.publishHistory.length) return 0;
+            const total = this.publishHistory.reduce((sum, n) => sum + n, 0);
+            return total / this.publishHistory.length;
+        },
+        queuePressurePercent() {
+            const total = this.totalPending + this.totalInFlight;
+            if (!total) return 0;
+            return (this.totalInFlight / total) * 100;
+        },
         timings() {
             const m = this.stats?.metrics || {};
             const map = {};
@@ -608,13 +1023,32 @@ createApp({
                 if (suffix === 'avg_ms') map[name].avg = v;
                 if (suffix === 'count') map[name].count = v;
             }
-            return Object.values(map);
+            return Object.values(map).sort((a, b) => b.count - a.count);
         },
     },
     methods: {
+        metricCounterValue(name, metricsPayload = null) {
+            const source = metricsPayload || this.stats?.metrics;
+            const v = source?.['counter.' + name];
+            return v != null ? Number(v) : 0;
+        },
         metricCounter(name) {
-            const v = this.stats?.metrics?.['counter.' + name];
-            return v != null ? Number(v).toLocaleString() : '0';
+            return this.metricCounterValue(name).toLocaleString();
+        },
+        formatRate(v) {
+            if (!Number.isFinite(v)) return '0.00/s';
+            const value = v >= 100 ? v.toFixed(0) : v.toFixed(2);
+            return `${value}/s`;
+        },
+        formatRelative(ts) {
+            if (!ts) return '—';
+            const deltaSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+            if (deltaSec < 2) return 'agora';
+            if (deltaSec < 60) return `${deltaSec}s atrás`;
+            const min = Math.floor(deltaSec / 60);
+            if (min < 60) return `${min}m atrás`;
+            const hours = Math.floor(min / 60);
+            return `${hours}h atrás`;
         },
         formatUptime(u) {
             if (!u) return '';
@@ -646,11 +1080,32 @@ createApp({
         },
         async fetchStats() {
             try {
-                this.stats = (await axios.get('/stats')).data;
+                const payload = (await axios.get('/stats')).data;
+                this.stats = payload;
                 this.fetchError = null;
-                const cur = this.stats?.metrics?.['counter.messages.published.total'] ?? 0;
-                const delta = this._lastPublished ? Math.max(0, cur - this._lastPublished) : 0;
-                this._lastPublished = cur;
+                this.lastStatsAt = Date.now();
+
+                const curPublished = this.metricCounterValue('messages.published.total', payload.metrics);
+                const curConsumed = this.metricCounterValue('messages.consumed.total', payload.metrics);
+                const curErrors = this.metricCounterValue('errors.total', payload.metrics);
+                const now = Date.now();
+
+                if (this._lastCounterSnapshot) {
+                    const elapsedSeconds = Math.max((now - this._lastCounterSnapshot.timestamp) / 1000, 0.001);
+                    this.rates.publishedPerSec = Math.max(0, (curPublished - this._lastCounterSnapshot.published) / elapsedSeconds);
+                    this.rates.consumedPerSec = Math.max(0, (curConsumed - this._lastCounterSnapshot.consumed) / elapsedSeconds);
+                    this.rates.errorsPerSec = Math.max(0, (curErrors - this._lastCounterSnapshot.errors) / elapsedSeconds);
+                }
+
+                this._lastCounterSnapshot = {
+                    timestamp: now,
+                    published: curPublished,
+                    consumed: curConsumed,
+                    errors: curErrors,
+                };
+
+                const delta = this._lastPublished == null ? 0 : Math.max(0, curPublished - this._lastPublished);
+                this._lastPublished = curPublished;
                 this.publishHistory.push(delta);
                 if (this.publishHistory.length > 60) this.publishHistory.shift();
             } catch(e) {
