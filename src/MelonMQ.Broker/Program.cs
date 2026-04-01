@@ -278,17 +278,20 @@ logger.LogInformation("MelonMQ Broker starting...");
 // Helper: validate admin API key for HTTP write/admin endpoints
 bool ValidateAdminApiKey(HttpContext context, bool readOnlyEndpoint = false)
 {
-    if (readOnlyEndpoint && !melonConfig.Security.ProtectReadEndpoints)
+    var runtimeConfig = context.RequestServices.GetRequiredService<MelonMQConfiguration>();
+    var security = runtimeConfig.Security;
+
+    if (readOnlyEndpoint && !security.ProtectReadEndpoints)
     {
         return true;
     }
 
-    if (!melonConfig.Security.RequireAdminApiKey)
+    if (!security.RequireAdminApiKey)
     {
         return true;
     }
 
-    if (!melonConfig.Security.HasAdminApiKey)
+    if (!security.HasAdminApiKey)
     {
         return false;
     }
@@ -300,7 +303,7 @@ bool ValidateAdminApiKey(HttpContext context, bool readOnlyEndpoint = false)
     }
 
     var providedBytes = Encoding.UTF8.GetBytes(apiKey);
-    var expectedBytes = Encoding.UTF8.GetBytes(melonConfig.Security.AdminApiKey);
+    var expectedBytes = Encoding.UTF8.GetBytes(security.AdminApiKey);
     return providedBytes.Length == expectedBytes.Length &&
            CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
 }

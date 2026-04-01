@@ -33,6 +33,28 @@
 				"--nologo"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "dotnet-test-integration",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj",
+				"--nologo"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "dotnet-test-sln-final",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"MelonMQ.sln",
+				"--nologo"
+			],
+			"isBackground": false
 		}
 	]
 }

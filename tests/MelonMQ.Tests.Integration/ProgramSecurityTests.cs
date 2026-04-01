@@ -1,7 +1,9 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using MelonMQ.Broker.Core;
 using System.Net;
 using System.Net.Http.Json;
 
@@ -91,22 +93,27 @@ public class ProgramSecurityTests
             .WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Testing");
-                builder.ConfigureAppConfiguration((_, configBuilder) =>
+                builder.ConfigureServices(services =>
                 {
-                    var settings = new Dictionary<string, string?>
-                    {
-                        ["MelonMQ:TcpBindAddress"] = "127.0.0.1",
-                        ["MelonMQ:TcpPort"] = "5672",
-                        ["MelonMQ:HttpPort"] = "9090",
-                        ["MelonMQ:DataDirectory"] = Path.Combine(Path.GetTempPath(), "melonmq-program-tests", Guid.NewGuid().ToString("N")),
-                        ["MelonMQ:Security:RequireAuth"] = "false",
-                        ["MelonMQ:Security:RequireHashedPasswords"] = "false",
-                        ["MelonMQ:Security:RequireAdminApiKey"] = requireApiKey.ToString(),
-                        ["MelonMQ:Security:ProtectReadEndpoints"] = protectReadEndpoints.ToString(),
-                        ["MelonMQ:Security:AdminApiKey"] = adminApiKey
-                    };
+                    services.RemoveAll<MelonMQConfiguration>();
 
-                    configBuilder.AddInMemoryCollection(settings);
+                    services.AddSingleton(new MelonMQConfiguration
+                    {
+                        TcpBindAddress = "127.0.0.1",
+                        TcpPort = 5672,
+                        HttpPort = 9090,
+                        DataDirectory = Path.Combine(Path.GetTempPath(), "melonmq-program-tests", Guid.NewGuid().ToString("N")),
+                        Security = new SecurityConfiguration
+                        {
+                            RequireAuth = false,
+                            RequireHashedPasswords = false,
+                            RequireAdminApiKey = requireApiKey,
+                            ProtectReadEndpoints = protectReadEndpoints,
+                            AdminApiKey = adminApiKey,
+                            AllowedOrigins = Array.Empty<string>(),
+                            Users = new Dictionary<string, string>()
+                        }
+                    });
                 });
             });
     }

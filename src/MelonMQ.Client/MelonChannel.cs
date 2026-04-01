@@ -56,6 +56,9 @@ public class MelonChannel : IDisposable, IAsyncDisposable
 
     public async IAsyncEnumerable<IncomingMessage> ConsumeAsync(string queue, int prefetch = 100, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        // Ensure delivery channel exists before subscription so early deliveries are not dropped.
+        var deliveryChannel = _connection.GetOrCreateDeliveryChannel(queue);
+
         // Set prefetch
         await SetPrefetchAsync(prefetch, cancellationToken);
 
@@ -69,9 +72,7 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             throw new InvalidOperationException($"Failed to subscribe to queue: {errorMessage}");
         }
 
-        // Get delivery channel and read from it
-        var deliveryChannel = _connection.GetOrCreateDeliveryChannel(queue);
-        
+        // Read from delivery channel
         await foreach (var message in deliveryChannel.Reader.ReadAllAsync(cancellationToken))
         {
             yield return message;
