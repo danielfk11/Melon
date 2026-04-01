@@ -86,7 +86,7 @@ function fetchQueues() {
   }
   resetIdle();
 
-  socket.on('deliver', async (frame) => {
+  socket.on('deliver', (frame) => {
     resetIdle();
     count++;
     const p = frame.payload;
@@ -94,9 +94,8 @@ function fetchQueues() {
     console.log(`  📥 [${String(count).padStart(3, '0')}] ${p.queue} → ${body}`);
     console.log(`       tag=${p.deliveryTag}  msgId=${p.messageId}  redelivered=${p.redelivered}`);
 
-    // ACK
     const ackId = send('ACK', { deliveryTag: p.deliveryTag });
-    waitFor(ackId, 3000).then((r) => {
+    waitFor(ackId, 5000).then((r) => {
       const status = isSuccess(r) ? '✓' : '✗';
       console.log(`       ${status} ACK → ${r.type}`);
     }).catch(() => {});

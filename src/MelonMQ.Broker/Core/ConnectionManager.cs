@@ -8,6 +8,11 @@ namespace MelonMQ.Broker.Core;
 
 public class ClientConnection : IDisposable
 {
+    // Keep delivery tags within JS Number.MAX_SAFE_INTEGER (2^53 - 1)
+    // so Node clients can ACK/NACK without precision loss.
+    private const int DeliveryTagPrefixBits = 21;
+    private const int DeliveryTagPrefixMaxExclusive = 1 << DeliveryTagPrefixBits;
+
     public string Id { get; }
     public Socket Socket { get; }
     public PipeReader Reader { get; }
@@ -35,7 +40,7 @@ public class ClientConnection : IDisposable
         Reader = reader;
         Stream = stream;
         LastHeartbeat = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        _deliveryTagPrefix = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
+        _deliveryTagPrefix = (uint)RandomNumberGenerator.GetInt32(1, DeliveryTagPrefixMaxExclusive);
     }
 
     public ulong NextClientDeliveryTag()

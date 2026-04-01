@@ -633,6 +633,18 @@ public class TcpServer
         var inFlightKey = $"{connection.Id}:{payload.Queue}";
         _connectionInFlightCount.TryAdd(inFlightKey, 0);
 
+        // Send the success response BEFORE starting the consumer task.
+        // If Task.Run starts immediately and wins the WriteLock, it would flood
+        // DELIVER frames and block this response indefinitely, causing the client
+        // to time out waiting for the CONSUMESUBSCRIBE ack.
+        var response = new Frame
+        {
+            Type = MessageType.ConsumeSubscribe,
+            CorrelationId = frame.CorrelationId,
+            Payload = new { success = true, queue = payload.Queue }
+        };
+        await WriteFrameAsync(connection, response);
+
         _ = Task.Run(async () =>
         {
             try
@@ -696,17 +708,20 @@ public class TcpServer
             finally
             {
                 _connectionInFlightCount.TryRemove(inFlightKey, out _);
+                // Re-queue any in-flight messages back to the queue when the consumer
+                // disconnects or re-subscribes, so they are not lost without a broker restart.
+                _ = Task.Run(async () =>
+                {
+                    try { await queue.RequeuePendingMessagesForConnection(connection.Id); }
+                    catch (ObjectDisposedException) { }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to requeue in-flight messages for connection {ConnectionId}", connection.Id);
+                    }
+                });
             }
         });
 
-        var response = new Frame
-        {
-            Type = MessageType.ConsumeSubscribe,
-            CorrelationId = frame.CorrelationId,
-            Payload = new { success = true, queue = payload.Queue }
-        };
-        
-        await WriteFrameAsync(connection, response);
     }
 
     private async Task HandleAck(ClientConnection connection, Frame frame)
