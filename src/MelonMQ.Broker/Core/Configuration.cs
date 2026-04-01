@@ -18,7 +18,50 @@ public class MelonMQConfiguration
     public int MaxMessageSize { get; set; } = 1048576; // 1MB
     public TcpTlsConfiguration TcpTls { get; set; } = new();
     public SecurityConfiguration Security { get; set; } = new();
+    public ObservabilityConfiguration Observability { get; set; } = new();
+    public ClusterConfiguration Cluster { get; set; } = new();
     public QueueGarbageCollectionConfiguration QueueGC { get; set; } = new();
+}
+
+public class ObservabilityConfiguration
+{
+    public string ServiceName { get; set; } = "MelonMQ.Broker";
+    public string ServiceVersion { get; set; } = "1.0.0";
+    public PrometheusConfiguration Prometheus { get; set; } = new();
+    public OtlpConfiguration Otlp { get; set; } = new();
+}
+
+public class PrometheusConfiguration
+{
+    public bool Enabled { get; set; } = true;
+    public string EndpointPath { get; set; } = "/metrics";
+    public bool RequireAdminApiKey { get; set; } = false;
+}
+
+public class OtlpConfiguration
+{
+    public bool Enabled { get; set; } = false;
+    public string Endpoint { get; set; } = string.Empty;
+    public string Protocol { get; set; } = "http/protobuf";
+    public string Headers { get; set; } = string.Empty;
+    public bool EnableMetrics { get; set; } = true;
+    public bool EnableTraces { get; set; } = true;
+    public int MetricsExportIntervalMs { get; set; } = 5000;
+    public int TimeoutMs { get; set; } = 10000;
+}
+
+public class ClusterConfiguration
+{
+    public bool Enabled { get; set; } = false;
+    public string NodeId { get; set; } = Environment.MachineName;
+    public string NodeAddress { get; set; } = string.Empty;
+    public string[] SeedNodes { get; set; } = Array.Empty<string>();
+    public string SharedKey { get; set; } = string.Empty;
+    public int DiscoveryIntervalSeconds { get; set; } = 5;
+    public int NodeTimeoutSeconds { get; set; } = 15;
+    public bool EnableReplication { get; set; } = true;
+    public bool RequireQuorumForWrites { get; set; } = true;
+    public string Consistency { get; set; } = "leader";
 }
 
 public class TcpTlsConfiguration
@@ -153,6 +196,108 @@ public static class ConfigurationExtensions
             {
                 throw new InvalidOperationException(
                     "Production requires explicit MelonMQ:Security:AllowedOrigins configuration.");
+            }
+
+            if (config.Cluster.Enabled && string.IsNullOrWhiteSpace(config.Cluster.SharedKey))
+            {
+                throw new InvalidOperationException(
+                    "Production clustering requires MelonMQ:Cluster:SharedKey to secure node-to-node traffic.");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.Observability.Prometheus.EndpointPath) &&
+            !config.Observability.Prometheus.EndpointPath.StartsWith('/'))
+        {
+            throw new ArgumentException(
+                "Prometheus endpoint path must start with '/'.",
+                nameof(config.Observability.Prometheus.EndpointPath));
+        }
+
+        if (config.Observability.Otlp.Enabled)
+        {
+            if (string.IsNullOrWhiteSpace(config.Observability.Otlp.Endpoint))
+            {
+                throw new InvalidOperationException(
+                    "OTLP exporter is enabled but MelonMQ:Observability:Otlp:Endpoint is empty.");
+            }
+
+            if (!Uri.TryCreate(config.Observability.Otlp.Endpoint, UriKind.Absolute, out var otlpUri) ||
+                (otlpUri.Scheme != Uri.UriSchemeHttp && otlpUri.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new InvalidOperationException(
+                    "OTLP endpoint must be a valid absolute HTTP/HTTPS URL.");
+            }
+
+            if (config.Observability.Otlp.MetricsExportIntervalMs < 500)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(config.Observability.Otlp.MetricsExportIntervalMs),
+                    "OTLP export interval must be at least 500ms.");
+            }
+
+            if (config.Observability.Otlp.TimeoutMs < 1000)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(config.Observability.Otlp.TimeoutMs),
+                    "OTLP exporter timeout must be at least 1000ms.");
+            }
+        }
+
+        if (config.Cluster.Enabled)
+        {
+            if (string.IsNullOrWhiteSpace(config.Cluster.NodeId))
+            {
+                throw new InvalidOperationException("Cluster is enabled but MelonMQ:Cluster:NodeId is empty.");
+            }
+
+            if (string.IsNullOrWhiteSpace(config.Cluster.NodeAddress))
+            {
+                throw new InvalidOperationException("Cluster is enabled but MelonMQ:Cluster:NodeAddress is empty.");
+            }
+
+            if (!Uri.TryCreate(config.Cluster.NodeAddress, UriKind.Absolute, out var nodeUri) ||
+                (nodeUri.Scheme != Uri.UriSchemeHttp && nodeUri.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new InvalidOperationException(
+                    "Cluster node address must be a valid absolute HTTP/HTTPS URL.");
+            }
+
+            foreach (var seedNode in config.Cluster.SeedNodes)
+            {
+                if (!Uri.TryCreate(seedNode, UriKind.Absolute, out var seedUri) ||
+                    (seedUri.Scheme != Uri.UriSchemeHttp && seedUri.Scheme != Uri.UriSchemeHttps))
+                {
+                    throw new InvalidOperationException(
+                        $"Invalid cluster seed node '{seedNode}'. Expected absolute HTTP/HTTPS URL.");
+                }
+            }
+
+            if (config.Cluster.DiscoveryIntervalSeconds < 1)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(config.Cluster.DiscoveryIntervalSeconds),
+                    "Cluster discovery interval must be at least 1 second.");
+            }
+
+            if (config.Cluster.NodeTimeoutSeconds < 2)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(config.Cluster.NodeTimeoutSeconds),
+                    "Cluster node timeout must be at least 2 seconds.");
+            }
+
+            if (config.Cluster.NodeTimeoutSeconds <= config.Cluster.DiscoveryIntervalSeconds)
+            {
+                throw new InvalidOperationException(
+                    "Cluster node timeout must be greater than discovery interval.");
+            }
+
+            var consistency = config.Cluster.Consistency.Trim();
+            if (!string.Equals(consistency, "leader", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(consistency, "quorum", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Cluster consistency must be either 'leader' or 'quorum'.");
             }
         }
 

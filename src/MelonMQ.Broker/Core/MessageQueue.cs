@@ -18,6 +18,7 @@ public class MessageQueue : IDisposable
     private readonly ChannelWriter<QueueMessage> _writer;
     private readonly ChannelReader<QueueMessage> _reader;
     private readonly ConcurrentDictionary<ulong, InFlightMessage> _inFlightMessages = new();
+    private readonly ConcurrentDictionary<Guid, byte> _ackedMessageIds = new();
     private readonly string? _persistenceFilePath;
     private readonly ILogger<MessageQueue> _logger;
     private readonly Func<string, MessageQueue?>? _queueResolver;
@@ -124,6 +125,12 @@ public class MessageQueue : IDisposable
             return false;
         }
 
+        if (_ackedMessageIds.ContainsKey(message.MessageId))
+        {
+            _logger.LogDebug("Message {MessageId} is already acked and will not be enqueued", message.MessageId);
+            return false;
+        }
+
         if (_config.Durable)
         {
             await QueuePersistenceRecordAsync(CreateEnqueueRecord(message), waitForFlush: false, cancellationToken);
@@ -140,6 +147,12 @@ public class MessageQueue : IDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             var message = await _reader.ReadAsync(cancellationToken);
+
+            if (_ackedMessageIds.ContainsKey(message.MessageId))
+            {
+                Interlocked.Decrement(ref _pendingCount);
+                continue;
+            }
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
@@ -175,6 +188,8 @@ public class MessageQueue : IDisposable
             return false;
         }
 
+        _ackedMessageIds[inFlight.Message.MessageId] = 0;
+
         if (_config.Durable)
         {
             try
@@ -193,6 +208,38 @@ public class MessageQueue : IDisposable
             inFlight.Message.MessageId, deliveryTag);
         TouchActivity();
         return true;
+    }
+
+    public async Task<bool> AckByMessageIdAsync(Guid messageId)
+    {
+        _ackedMessageIds[messageId] = 0;
+
+        foreach (var kvp in _inFlightMessages.ToArray())
+        {
+            if (kvp.Value.Message.MessageId == messageId)
+            {
+                _inFlightMessages.TryRemove(kvp.Key, out _);
+            }
+        }
+
+        if (_config.Durable)
+        {
+            await AppendCriticalPersistenceRecordAsync(CreateAckRecord(messageId));
+        }
+
+        return true;
+    }
+
+    public bool TryGetInFlightMessageId(ulong deliveryTag, out Guid messageId)
+    {
+        if (_inFlightMessages.TryGetValue(deliveryTag, out var inFlight))
+        {
+            messageId = inFlight.Message.MessageId;
+            return true;
+        }
+
+        messageId = Guid.Empty;
+        return false;
     }
 
     public async Task<bool> NackAsync(ulong deliveryTag, bool requeue = true)
@@ -442,6 +489,7 @@ public class MessageQueue : IDisposable
                     {
                         removedCount += orderedMessages.Count;
                         orderedMessages.Clear();
+                        _ackedMessageIds.Clear();
                         continue;
                     }
 
@@ -453,6 +501,7 @@ public class MessageQueue : IDisposable
 
                     if (string.Equals(op, AckOperation, StringComparison.OrdinalIgnoreCase))
                     {
+                        _ackedMessageIds[msgId] = 0;
                         if (orderedMessages.Remove(msgId))
                         {
                             removedCount++;
@@ -562,6 +611,7 @@ public class MessageQueue : IDisposable
                     if (string.Equals(op, PurgeOperation, StringComparison.OrdinalIgnoreCase))
                     {
                         orderedMessages.Clear();
+                        _ackedMessageIds.Clear();
                         continue;
                     }
 
@@ -572,6 +622,7 @@ public class MessageQueue : IDisposable
 
                     if (string.Equals(op, AckOperation, StringComparison.OrdinalIgnoreCase))
                     {
+                        _ackedMessageIds[msgId] = 0;
                         orderedMessages.Remove(msgId);
                         continue;
                     }

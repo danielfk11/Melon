@@ -13,7 +13,8 @@ Message broker leve escrito em C# com protocolo TCP binário e API HTTP.
 - Garbage collector de filas inativas
 - Prefetch configurável por consumidor
 - Heartbeat e detecção de conexões mortas
-- Métricas internas (contadores e timings)
+- Métricas Prometheus e OpenTelemetry (OTLP)
+- Clustering com eleição de líder e replicação
 - Interface web de administração embutida
 
 ## Início rápido
@@ -58,6 +59,27 @@ Edite o `appsettings.json` na raiz do broker:
       "AllowedOrigins": [],
       "AdminApiKey": "",
       "Users": {}
+    },
+    "Observability": {
+      "Prometheus": {
+        "Enabled": true,
+        "EndpointPath": "/metrics"
+      },
+      "Otlp": {
+        "Enabled": false,
+        "Endpoint": "http://localhost:4318",
+        "Protocol": "http/protobuf",
+        "EnableMetrics": true,
+        "EnableTraces": true
+      }
+    },
+    "Cluster": {
+      "Enabled": false,
+      "NodeId": "node-local",
+      "NodeAddress": "http://127.0.0.1:9090",
+      "SeedNodes": [],
+      "SharedKey": "",
+      "Consistency": "leader"
     },
     "QueueGC": {
       "Enabled": true,
@@ -144,6 +166,7 @@ Qualquer linguagem pode interagir com o broker via HTTP.
 |--------|----------|-----------|
 | `GET` | `/health` | Status do broker |
 | `GET` | `/stats` | Estatísticas (filas, conexões, métricas, uptime) |
+| `GET` | `/metrics` | Endpoint Prometheus |
 | `GET` | `/queues` | Lista filas |
 | `POST` | `/queues/declare` | Cria uma fila |
 | `DELETE` | `/queues/{name}` | Deleta uma fila |
@@ -153,6 +176,7 @@ Qualquer linguagem pode interagir com o broker via HTTP.
 | `GET` | `/queues/inactive` | Lista filas inativas |
 | `POST` | `/queues/gc` | Executa GC manualmente |
 | `GET` | `/queues/gc/status` | Status do GC |
+| `GET` | `/cluster/status` | Estado do cluster |
 
 ### Exemplos com curl
 
@@ -211,8 +235,8 @@ Inclui testes unitários, de integração e benchmarks.
 - [x] Queue Garbage Collector
 - [x] Interface web
 - [ ] Autenticação JWT
-- [ ] Métricas (Prometheus/OpenTelemetry)
-- [ ] Clustering
+- [x] Métricas (Prometheus/OpenTelemetry)
+- [x] Clustering
 - [ ] SDKs para outras linguagens
 
 ## Licença

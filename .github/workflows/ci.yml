@@ -1,0 +1,100 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore MelonMQ.sln --nologo
+
+      - name: Build
+        run: dotnet build MelonMQ.sln --configuration Release --no-restore --nologo
+
+      - name: Generate TLS test certificate
+        run: |
+          mkdir -p "$RUNNER_TEMP/melonmq-tls"
+          openssl req -x509 -newkey rsa:2048 \
+            -keyout "$RUNNER_TEMP/melonmq-tls/server.key" \
+            -out "$RUNNER_TEMP/melonmq-tls/server.crt" \
+            -days 2 -nodes -subj "/CN=localhost"
+          openssl pkcs12 -export \
+            -out "$RUNNER_TEMP/melonmq-tls/server.pfx" \
+            -inkey "$RUNNER_TEMP/melonmq-tls/server.key" \
+            -in "$RUNNER_TEMP/melonmq-tls/server.crt" \
+            -password pass:melonmq-test-password
+
+      - name: Run unit tests
+        run: dotnet test tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj --configuration Release --no-build --nologo
+
+      - name: Run integration tests
+        env:
+          MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
+          MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
+        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo
+
+      - name: Coverage gate - TcpServer
+        env:
+          MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
+          MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
+        run: |
+          dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj \
+            --configuration Release \
+            --no-build \
+            --nologo \
+            /p:CollectCoverage=true \
+            /p:CoverletOutputFormat=json \
+            /p:CoverletOutput=TestResults/Coverage/TcpServer/ \
+            /p:Include='[MelonMQ.Broker]MelonMQ.Broker.Core.TcpServer' \
+            /p:Threshold=50 \
+            /p:ThresholdType=line \
+            /p:ThresholdStat=total
+
+      - name: Coverage gate - Program
+        env:
+          MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
+          MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
+        run: |
+          dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj \
+            --configuration Release \
+            --no-build \
+            --nologo \
+            /p:CollectCoverage=true \
+            /p:CoverletOutputFormat=json \
+            /p:CoverletOutput=TestResults/Coverage/Program/ \
+            /p:Include='[MelonMQ.Broker]Program' \
+            /p:Threshold=90 \
+            /p:ThresholdType=line \
+            /p:ThresholdStat=total
+
+      - name: Coverage gate - MelonConnection
+        env:
+          MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
+          MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
+        run: |
+          dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj \
+            --configuration Release \
+            --no-build \
+            --nologo \
+            /p:CollectCoverage=true \
+            /p:CoverletOutputFormat=json \
+            /p:CoverletOutput=TestResults/Coverage/MelonConnection/ \
+            /p:Include='[MelonMQ.Client]MelonMQ.Client.MelonConnection' \
+            /p:Threshold=65 \
+            /p:ThresholdType=line \
+            /p:ThresholdStat=total

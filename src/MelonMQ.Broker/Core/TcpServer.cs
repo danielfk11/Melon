@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
@@ -17,6 +18,7 @@ public class TcpServer
     private readonly MelonMetrics _metrics;
     private readonly ILogger<TcpServer> _logger;
     private readonly MelonMQConfiguration _config;
+    private readonly ClusterCoordinator? _clusterCoordinator;
     private readonly X509Certificate2? _serverCertificate;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
@@ -26,13 +28,20 @@ public class TcpServer
 
     public bool IsListening { get; private set; }
 
-    public TcpServer(QueueManager queueManager, ConnectionManager connectionManager, MelonMQConfiguration config, ILogger<TcpServer> logger, MelonMetrics metrics)
+    public TcpServer(
+        QueueManager queueManager,
+        ConnectionManager connectionManager,
+        MelonMQConfiguration config,
+        ILogger<TcpServer> logger,
+        MelonMetrics metrics,
+        ClusterCoordinator? clusterCoordinator = null)
     {
         _queueManager = queueManager;
         _connectionManager = connectionManager;
         _config = config;
         _logger = logger;
         _metrics = metrics;
+        _clusterCoordinator = clusterCoordinator;
 
         if (_config.TcpTls.Enabled)
         {
@@ -306,6 +315,12 @@ public class TcpServer
 
     private async Task HandleFrame(ClientConnection connection, Frame frame, CancellationToken cancellationToken)
     {
+        using var activity = _metrics.StartActivity($"tcp.{frame.Type}", ActivityKind.Server);
+        activity?.SetTag("messaging.system", "melonmq");
+        activity?.SetTag("messaging.operation", frame.Type.ToString());
+        activity?.SetTag("network.transport", "tcp");
+        activity?.SetTag("net.peer.connection_id", connection.Id);
+
         try
         {
             // Auth frames are always allowed
@@ -326,6 +341,17 @@ public class TcpServer
             if (_config.Security.RequireAuth && !connection.IsAuthenticated)
             {
                 await SendError(connection, frame.CorrelationId, "Authentication required. Send Auth frame first.");
+                return;
+            }
+
+            if (IsWriteFrameType(frame.Type) &&
+                _clusterCoordinator?.Enabled == true &&
+                !_clusterCoordinator.CanAcceptWrites(out var writeRejectionReason))
+            {
+                await SendError(
+                    connection,
+                    frame.CorrelationId,
+                    writeRejectionReason ?? "This node is not allowed to accept write operations.");
                 return;
             }
 
@@ -362,6 +388,7 @@ public class TcpServer
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Error handling frame {FrameType} for connection {ConnectionId}", 
                 frame.Type, connection.Id);
             await SendError(connection, frame.CorrelationId, ex.Message);
@@ -444,11 +471,31 @@ public class TcpServer
         
         try
         {
+            var alreadyExisted = _queueManager.GetQueue(payload.Queue) != null;
             var queue = _queueManager.DeclareQueue(
                 payload.Queue, 
                 payload.Durable, 
                 payload.DeadLetterQueue, 
                 payload.DefaultTtlMs);
+
+            if (!alreadyExisted && _clusterCoordinator?.Enabled == true)
+            {
+                var replicated = await _clusterCoordinator.ReplicateDeclareQueueAsync(
+                    payload.Queue,
+                    payload.Durable,
+                    payload.DeadLetterQueue,
+                    payload.DefaultTtlMs);
+
+                if (!replicated)
+                {
+                    _queueManager.DeleteQueue(payload.Queue);
+                    await SendError(
+                        connection,
+                        frame.CorrelationId,
+                        "Declare queue failed to meet cluster consistency policy.");
+                    return;
+                }
+            }
 
             var response = new Frame
             {
@@ -520,8 +567,23 @@ public class TcpServer
         };
 
         await queue.EnqueueAsync(message);
+
+        if (_clusterCoordinator?.Enabled == true)
+        {
+            var replicated = await _clusterCoordinator.ReplicatePublishAsync(payload.Queue, message);
+            if (!replicated)
+            {
+                await queue.AckByMessageIdAsync(message.MessageId);
+                await SendError(
+                    connection,
+                    frame.CorrelationId,
+                    "Publish failed to meet cluster consistency policy.");
+                return;
+            }
+        }
+
         sw.Stop();
-        _metrics.RecordMessagePublished(payload.Queue, sw.Elapsed);
+        _metrics.RecordMessagePublished(payload.Queue, sw.Elapsed, bodyBytes.Length, source: "tcp", replicated: _clusterCoordinator?.Enabled == true);
 
         try
         {
@@ -542,6 +604,13 @@ public class TcpServer
 
     private async Task HandleConsumeSubscribe(ClientConnection connection, Frame frame, CancellationToken cancellationToken)
     {
+        if (_clusterCoordinator?.Enabled == true &&
+            !_clusterCoordinator.CanAcceptWrites(out var reason))
+        {
+            await SendError(connection, frame.CorrelationId, reason ?? "Follower nodes do not serve consume subscriptions.");
+            return;
+        }
+
         var payload = (ConsumeSubscribePayload)frame.Payload!;
         var queue = _queueManager.GetQueue(payload.Queue);
         
@@ -611,7 +680,7 @@ public class TcpServer
 
                     await WriteFrameAsync(connection, deliverFrame);
                     _connectionInFlightCount.AddOrUpdate(inFlightKey, 1, (_, v) => v + 1);
-                    _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero);
+                    _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero, message.Redelivered, source: "tcp");
                 }
             }
             catch (OperationCanceledException)
@@ -661,9 +730,24 @@ public class TcpServer
 
         _deliveryTagMap.TryRemove(payload.DeliveryTag, out _);
         var queue = _queueManager.GetQueue(mapping.QueueName);
+        Guid? ackedMessageId = null;
         if (queue != null)
         {
+            if (queue.TryGetInFlightMessageId(mapping.QueueDeliveryTag, out var messageId))
+            {
+                ackedMessageId = messageId;
+            }
+
             success = await queue.AckAsync(mapping.QueueDeliveryTag);
+
+            if (success && ackedMessageId.HasValue && _clusterCoordinator?.Enabled == true)
+            {
+                var replicated = await _clusterCoordinator.ReplicateAckAsync(mapping.QueueName, ackedMessageId.Value);
+                if (!replicated)
+                {
+                    _metrics.RecordError("ack", "cluster_replication_failed", mapping.QueueName);
+                }
+            }
         }
 
         // Decrement in-flight counter for prefetch control
@@ -730,6 +814,14 @@ public class TcpServer
         };
         
         await WriteFrameAsync(connection, response);
+    }
+
+    private static bool IsWriteFrameType(MessageType messageType)
+    {
+        return messageType is MessageType.DeclareQueue
+            or MessageType.Publish
+            or MessageType.Ack
+            or MessageType.Nack;
     }
 
     private async Task HandleSetPrefetch(ClientConnection connection, Frame frame)
