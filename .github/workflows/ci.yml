@@ -94,8 +94,7 @@ jobs:
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=json \
             /p:CoverletOutput=TestResults/Coverage/MelonConnection/ \
-            /p:Include='[MelonMQ.Client]*' \
-            /p:ExcludeByFile='**/MelonMQ.Client/ConnectionHelper.cs,**/MelonMQ.Client/MelonChannel.cs,**/MelonMQ.Client/Models.cs,**/MelonMQ.Client/Protocol/*.cs,**/*AssemblyInfo.cs' \
+            /p:Include='[MelonMQ.Client]MelonMQ.Client.MelonConnection' \
             /p:Threshold=65 \
             /p:ThresholdType=line \
             /p:ThresholdStat=total
