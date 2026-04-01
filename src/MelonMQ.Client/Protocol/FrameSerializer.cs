@@ -19,11 +19,25 @@ public class Frame
 
 public static class FrameSerializer
 {
+    private static int _maxFrameSizeBytes = MessageSizePolicy.ComputeMaxFrameSizeBytes(1024 * 1024);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = false
     };
+
+    public static int MaxFrameSizeBytes => Volatile.Read(ref _maxFrameSizeBytes);
+
+    public static void ConfigureMaxFrameSize(int maxFrameSizeBytes)
+    {
+        if (maxFrameSizeBytes < 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxFrameSizeBytes), "Frame size must be at least 1024 bytes.");
+        }
+
+        Interlocked.Exchange(ref _maxFrameSizeBytes, maxFrameSizeBytes);
+    }
 
     public static void WriteFrame(PipeWriter writer, MessageType type, ulong correlationId, object? payload = null)
     {
@@ -35,6 +49,11 @@ public static class FrameSerializer
         };
 
         var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(frameJson, JsonOptions);
+        if (jsonBytes.Length > MaxFrameSizeBytes)
+        {
+            throw new InvalidDataException($"Frame size ({jsonBytes.Length} bytes) exceeds max allowed ({MaxFrameSizeBytes} bytes)");
+        }
+
         var lengthBytes = BitConverter.GetBytes(jsonBytes.Length);
         
         if (BitConverter.IsLittleEndian == false)
@@ -60,9 +79,9 @@ public static class FrameSerializer
         var messageLength = BitConverter.ToInt32(lengthBytes);
         reader.AdvanceTo(lengthBuffer.End);
 
-        if (messageLength <= 0 || messageLength > 1024 * 1024) // Max 1MB per message
+        if (messageLength <= 0 || messageLength > MaxFrameSizeBytes)
         {
-            throw new InvalidDataException($"Invalid message length: {messageLength}");
+            throw new InvalidDataException($"Invalid message length: {messageLength} (max {MaxFrameSizeBytes})");
         }
 
         // Read message content

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using MelonMQ.Broker.Protocol;
 
 namespace MelonMQ.Broker.Core;
@@ -21,6 +22,8 @@ public class ClientConnection : IDisposable
     /// Released on Ack/Nack, waited on in consumer loop instead of busy-wait polling.
     /// </summary>
     public SemaphoreSlim PrefetchSlotAvailable { get; } = new(0, int.MaxValue);
+    private readonly uint _deliveryTagPrefix;
+    private int _nextClientDeliveryTag;
     private int _disposed;
 
     public bool IsDisposed => Volatile.Read(ref _disposed) == 1;
@@ -32,6 +35,13 @@ public class ClientConnection : IDisposable
         Reader = reader;
         Stream = stream;
         LastHeartbeat = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _deliveryTagPrefix = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
+    }
+
+    public ulong NextClientDeliveryTag()
+    {
+        var sequence = (uint)Interlocked.Increment(ref _nextClientDeliveryTag);
+        return ((ulong)_deliveryTagPrefix << 32) | sequence;
     }
 
     public void Dispose()

@@ -9,6 +9,11 @@
  * Env:    MELON_HOST (default 127.0.0.1)  MELON_PORT (default 5672)
  */
 const { connect } = require('./protocol');
+const crypto = require('crypto');
+
+function isSuccess(frame) {
+  return frame && frame.type !== 'ERROR' && frame.payload?.success !== false;
+}
 
 const MSGS_PER_QUEUE = 5;
 
@@ -56,7 +61,7 @@ const QUEUES = [
       deadLetterQueue: q.dlq,
       defaultTtlMs: q.ttl,
     });
-    const icon = decl.type === 'SUCCESS' ? '✓' : '✗';
+    const icon = isSuccess(decl) ? '✓' : '✗';
     console.log(`  ${icon} ${q.name}`);
   }
 
@@ -79,7 +84,7 @@ const QUEUES = [
       });
 
       sent++;
-      const status = res.type === 'SUCCESS' ? '✓' : '✗';
+      const status = isSuccess(res) ? '✓' : '✗';
       console.log(`  ${status} [${sent}/${totalMsgs}] ${q.name} → ${JSON.stringify(payload)}`);
     }
   }

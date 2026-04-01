@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace MelonMQ.Broker.Core;
 
-public class QueueManager : IQueueManager
+public class QueueManager : IQueueManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, MessageQueue> _queues = new();
     private readonly string? _dataDirectory;
@@ -100,6 +100,7 @@ public class QueueManager : IQueueManager
     {
         if (_queues.TryRemove(name, out var queue))
         {
+            queue.Dispose();
             // Clean up persistence file
             queue.DeletePersistenceFile();
             _logger.LogInformation("Deleted queue {QueueName}", name);
@@ -133,6 +134,8 @@ public class QueueManager : IQueueManager
         {
             if (_queues.TryRemove(queueName, out var queue))
             {
+                queue.Dispose();
+                queue.DeletePersistenceFile();
                 var idleMinutes = (now - queue.LastActivityAt) / 60000.0;
                 _logger.LogInformation(
                     "GC: Deleted inactive queue '{QueueName}' (idle for {IdleMinutes:F1} minutes, durable: {Durable})",
@@ -162,5 +165,13 @@ public class QueueManager : IQueueManager
             .Where(q => q.IsEmpty && (now - q.LastActivityAt) > thresholdMs)
             .Select(q => (q.Name, q.IsDurable, q.IdleTimeMs))
             .OrderByDescending(q => q.IdleTimeMs);
+    }
+
+    public void Dispose()
+    {
+        foreach (var queue in _queues.Values)
+        {
+            queue.Dispose();
+        }
     }
 }

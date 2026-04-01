@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
 using System.IO.Pipelines;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using MelonMQ.Broker.Protocol;
 using MelonMQ.Protocol;
 
@@ -14,12 +17,12 @@ public class TcpServer
     private readonly MelonMetrics _metrics;
     private readonly ILogger<TcpServer> _logger;
     private readonly MelonMQConfiguration _config;
+    private readonly X509Certificate2? _serverCertificate;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentDictionary<ulong, (string ConnectionId, string QueueName, ulong QueueDeliveryTag)> _deliveryTagMap = new();
     private readonly ConcurrentDictionary<string, int> _connectionInFlightCount = new();
     private readonly ConcurrentBag<Task> _activeClientTasks = new();
-    private long _nextDeliveryTag = 0;
 
     public bool IsListening { get; private set; }
 
@@ -30,16 +33,24 @@ public class TcpServer
         _config = config;
         _logger = logger;
         _metrics = metrics;
+
+        if (_config.TcpTls.Enabled)
+        {
+            _serverCertificate = LoadServerCertificate(_config.TcpTls);
+        }
+
+        FrameSerializer.ConfigureMaxFrameSize(MessageSizePolicy.ComputeMaxFrameSizeBytes(_config.MaxMessageSize));
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _listener = new TcpListener(IPAddress.Any, _config.TcpPort);
+        var bindAddress = ResolveBindAddress(_config.TcpBindAddress);
+        _listener = new TcpListener(bindAddress, _config.TcpPort);
         _listener.Start();
         IsListening = true;
 
-        _logger.LogInformation("TCP Server started on port {Port}", _config.TcpPort);
+        _logger.LogInformation("TCP Server started on {Address}:{Port}", bindAddress, _config.TcpPort);
 
         // Start cleanup task
         _ = Task.Run(() => CleanupTask(_cancellationTokenSource.Token));
@@ -48,7 +59,7 @@ public class TcpServer
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
-                var tcpClient = await _listener.AcceptTcpClientAsync();
+                var tcpClient = await _listener.AcceptTcpClientAsync(_cancellationTokenSource.Token);
                 
                 // Enforce max connections
                 if (_connectionManager.ConnectionCount >= _config.MaxConnections)
@@ -58,9 +69,13 @@ public class TcpServer
                     continue;
                 }
                 
-                _ = Task.Run(() => HandleClientAsync(tcpClient, _cancellationTokenSource.Token))
-                    .ContinueWith(t => _activeClientTasks.TryTake(out _));
+                var clientTask = Task.Run(() => HandleClientAsync(tcpClient, _cancellationTokenSource.Token), _cancellationTokenSource.Token);
+                _activeClientTasks.Add(clientTask);
             }
+        }
+        catch (OperationCanceledException) when (_cancellationTokenSource.Token.IsCancellationRequested)
+        {
+            // Server is stopping
         }
         catch (ObjectDisposedException)
         {
@@ -121,8 +136,32 @@ public class TcpServer
             tcpClient.ReceiveTimeout = 30000; // 30 seconds
             tcpClient.SendTimeout = 10000;    // 10 seconds
 
+            // Create linked cancellation token with connection lifetime timeout
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromHours(24)); // Max connection time
+
             var socket = tcpClient.Client;
-            var stream = tcpClient.GetStream();
+            var networkStream = tcpClient.GetStream();
+            Stream stream = networkStream;
+            if (_config.TcpTls.Enabled)
+            {
+                var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
+                var sslOptions = new SslServerAuthenticationOptions
+                {
+                    ServerCertificate = _serverCertificate!,
+                    ClientCertificateRequired = _config.TcpTls.ClientCertificateRequired,
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = _config.TcpTls.CheckCertificateRevocation
+                        ? X509RevocationMode.Online
+                        : X509RevocationMode.NoCheck
+                };
+
+                using var tlsHandshakeCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+                tlsHandshakeCts.CancelAfter(TimeSpan.FromSeconds(15));
+                await sslStream.AuthenticateAsServerAsync(sslOptions, tlsHandshakeCts.Token);
+                stream = sslStream;
+            }
+
             var pipe = new Pipe();
             
             connection = new ClientConnection(
@@ -135,10 +174,6 @@ public class TcpServer
             _metrics.RecordConnectionOpened();
             _logger.LogInformation("Client {ConnectionId} connected from {RemoteEndPoint}", 
                 connectionId, tcpClient.Client.RemoteEndPoint);
-
-            // Create linked cancellation token with timeout
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(TimeSpan.FromHours(24)); // Max connection time
 
             // Start reading from network into pipe
             var readTask = ReadFromNetworkAsync(stream, pipe.Writer, timeoutCts.Token);
@@ -163,6 +198,10 @@ public class TcpServer
         catch (IOException ioEx)
         {
             _logger.LogWarning("IO error with client {ConnectionId}: {Message}", connectionId, ioEx.Message);
+        }
+        catch (AuthenticationException authEx)
+        {
+            _logger.LogWarning("TLS handshake failed for client {ConnectionId}: {Message}", connectionId, authEx.Message);
         }
         catch (ObjectDisposedException)
         {
@@ -192,6 +231,14 @@ public class TcpServer
                         _deliveryTagMap.TryRemove(tag, out _);
                     }
 
+                    var inFlightKeysToRemove = _connectionInFlightCount.Keys
+                        .Where(k => k.StartsWith(connectionId + ":", StringComparison.Ordinal))
+                        .ToList();
+                    foreach (var key in inFlightKeysToRemove)
+                    {
+                        _connectionInFlightCount.TryRemove(key, out _);
+                    }
+
                     // Requeue any in-flight messages
                     foreach (var queue in _queueManager.GetAllQueues())
                     {
@@ -211,7 +258,7 @@ public class TcpServer
         }
     }
 
-    private async Task ReadFromNetworkAsync(NetworkStream stream, PipeWriter writer, CancellationToken cancellationToken)
+    private async Task ReadFromNetworkAsync(Stream stream, PipeWriter writer, CancellationToken cancellationToken)
     {
         try
         {
@@ -344,7 +391,7 @@ public class TcpServer
             if (_config.Security.Users.Count > 0)
             {
                 if (!_config.Security.Users.TryGetValue(payload.Username, out var expectedPassword) 
-                    || expectedPassword != payload.Password)
+                    || !PasswordHasher.VerifyPassword(payload.Password, expectedPassword))
                 {
                     _logger.LogWarning("Auth failed for connection {ConnectionId} with user {Username}", 
                         connection.Id, payload.Username);
@@ -361,8 +408,18 @@ public class TcpServer
             }
             else
             {
-                _logger.LogWarning("Auth required but no users configured. Allowing connection {ConnectionId} with user {Username}",
+                _logger.LogError("Auth required but no users configured. Rejecting connection {ConnectionId} for user {Username}",
                     connection.Id, payload.Username);
+                _metrics.RecordError("auth", "no_users_configured");
+
+                var errorResponse = new Frame
+                {
+                    Type = MessageType.Error,
+                    CorrelationId = frame.CorrelationId,
+                    Payload = new { success = false, message = "Authentication is enabled but no users are configured" }
+                };
+                await WriteFrameAsync(connection, errorResponse);
+                return;
             }
             
             _logger.LogInformation("Auth success for connection {ConnectionId} with user {Username}", 
@@ -414,14 +471,24 @@ public class TcpServer
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var payload = (PublishPayload)frame.Payload!;
         
-        if (string.IsNullOrEmpty(payload.Queue) && string.IsNullOrEmpty(payload.BodyBase64))
+        if (string.IsNullOrWhiteSpace(payload.Queue) || string.IsNullOrWhiteSpace(payload.BodyBase64))
         {
-            _logger.LogError("Received malformed PublishPayload with empty Queue and BodyBase64 from connection {ConnectionId}", connection.Id);
+            await SendError(connection, frame.CorrelationId, "Publish payload must include both queue and bodyBase64");
+            return;
+        }
+
+        byte[] bodyBytes;
+        try
+        {
+            bodyBytes = Convert.FromBase64String(payload.BodyBase64);
+        }
+        catch (FormatException)
+        {
+            await SendError(connection, frame.CorrelationId, "Invalid Base64 payload in bodyBase64");
             return;
         }
         
         // Enforce max message size
-        var bodyBytes = Convert.FromBase64String(payload.BodyBase64);
         if (bodyBytes.Length > _config.MaxMessageSize)
         {
             await SendError(connection, frame.CorrelationId, 
@@ -438,13 +505,15 @@ public class TcpServer
         }
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var effectiveTtlMs = payload.TtlMs ?? queue.DefaultTtlMs;
+        var messageId = payload.MessageId == Guid.Empty ? Guid.NewGuid() : payload.MessageId;
         
         var message = new QueueMessage
         {
-            MessageId = payload.MessageId,
+            MessageId = messageId,
             Body = bodyBytes,
             EnqueuedAt = now,
-            ExpiresAt = payload.TtlMs.HasValue ? now + payload.TtlMs.Value : null,
+            ExpiresAt = effectiveTtlMs.HasValue ? now + effectiveTtlMs.Value : null,
             Persistent = payload.Persistent,
             Redelivered = false,
             DeliveryCount = 0
@@ -460,7 +529,7 @@ public class TcpServer
             {
                 Type = MessageType.Publish,
                 CorrelationId = frame.CorrelationId,
-                Payload = new { success = true, messageId = payload.MessageId }
+                Payload = new { success = true, messageId }
             };
             
             await WriteFrameAsync(connection, response);
@@ -519,7 +588,7 @@ public class TcpServer
                     if (result == null) continue;
 
                     var (message, queueDeliveryTag) = result.Value;
-                    var clientDeliveryTag = (ulong)Interlocked.Increment(ref _nextDeliveryTag);
+                    var clientDeliveryTag = connection.NextClientDeliveryTag();
                     
                     // Map client-facing tag to connection + queue name + queue's internal tag
                     _deliveryTagMap[clientDeliveryTag] = (connection.Id, payload.Queue, queueDeliveryTag);
@@ -574,25 +643,37 @@ public class TcpServer
     private async Task HandleAck(ClientConnection connection, Frame frame)
     {
         var payload = (AckPayload)frame.Payload!;
+
+        if (!_deliveryTagMap.TryGetValue(payload.DeliveryTag, out var mapping))
+        {
+            _metrics.RecordError("ack", "unknown_delivery_tag");
+            await SendError(connection, frame.CorrelationId, "Unknown delivery tag.");
+            return;
+        }
         
         var success = false;
-        if (_deliveryTagMap.TryRemove(payload.DeliveryTag, out var mapping))
+        if (mapping.ConnectionId != connection.Id)
         {
-            var queue = _queueManager.GetQueue(mapping.QueueName);
-            if (queue != null)
-            {
-                success = await queue.AckAsync(mapping.QueueDeliveryTag);
-            }
+            _metrics.RecordError("ack", "delivery_tag_ownership_violation");
+            await SendError(connection, frame.CorrelationId, "Delivery tag does not belong to this connection.");
+            return;
+        }
 
-            // Decrement in-flight counter for prefetch control
-            var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
-            _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
+        _deliveryTagMap.TryRemove(payload.DeliveryTag, out _);
+        var queue = _queueManager.GetQueue(mapping.QueueName);
+        if (queue != null)
+        {
+            success = await queue.AckAsync(mapping.QueueDeliveryTag);
+        }
 
-            // Signal consumer loop that a prefetch slot is available
-            if (!connection.IsDisposed)
-            {
-                try { connection.PrefetchSlotAvailable.Release(); } catch (ObjectDisposedException) { }
-            }
+        // Decrement in-flight counter for prefetch control
+        var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
+        _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
+
+        // Signal consumer loop that a prefetch slot is available
+        if (!connection.IsDisposed)
+        {
+            try { connection.PrefetchSlotAvailable.Release(); } catch (ObjectDisposedException) { }
         }
 
         var response = new Frame
@@ -608,25 +689,37 @@ public class TcpServer
     private async Task HandleNack(ClientConnection connection, Frame frame)
     {
         var payload = (NackPayload)frame.Payload!;
+
+        if (!_deliveryTagMap.TryGetValue(payload.DeliveryTag, out var mapping))
+        {
+            _metrics.RecordError("nack", "unknown_delivery_tag");
+            await SendError(connection, frame.CorrelationId, "Unknown delivery tag.");
+            return;
+        }
         
         var success = false;
-        if (_deliveryTagMap.TryRemove(payload.DeliveryTag, out var mapping))
+        if (mapping.ConnectionId != connection.Id)
         {
-            var queue = _queueManager.GetQueue(mapping.QueueName);
-            if (queue != null)
-            {
-                success = await queue.NackAsync(mapping.QueueDeliveryTag, payload.Requeue);
-            }
+            _metrics.RecordError("nack", "delivery_tag_ownership_violation");
+            await SendError(connection, frame.CorrelationId, "Delivery tag does not belong to this connection.");
+            return;
+        }
 
-            // Decrement in-flight counter for prefetch control
-            var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
-            _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
+        _deliveryTagMap.TryRemove(payload.DeliveryTag, out _);
+        var queue = _queueManager.GetQueue(mapping.QueueName);
+        if (queue != null)
+        {
+            success = await queue.NackAsync(mapping.QueueDeliveryTag, payload.Requeue);
+        }
 
-            // Signal consumer loop that a prefetch slot is available
-            if (!connection.IsDisposed)
-            {
-                try { connection.PrefetchSlotAvailable.Release(); } catch (ObjectDisposedException) { }
-            }
+        // Decrement in-flight counter for prefetch control
+        var inFlightKey = $"{connection.Id}:{mapping.QueueName}";
+        _connectionInFlightCount.AddOrUpdate(inFlightKey, 0, (_, v) => Math.Max(0, v - 1));
+
+        // Signal consumer loop that a prefetch slot is available
+        if (!connection.IsDisposed)
+        {
+            try { connection.PrefetchSlotAvailable.Release(); } catch (ObjectDisposedException) { }
         }
 
         var response = new Frame
@@ -757,5 +850,32 @@ public class TcpServer
         {
             _logger.LogDebug("Cleaned up {Count} stale delivery tag mappings", tagsToRemove.Count);
         }
+    }
+
+    private static IPAddress ResolveBindAddress(string bindAddress)
+    {
+        if (string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return IPAddress.Loopback;
+        }
+
+        if (IPAddress.TryParse(bindAddress, out var address))
+        {
+            return address;
+        }
+
+        throw new InvalidOperationException($"Invalid TCP bind address: '{bindAddress}'");
+    }
+
+    private static X509Certificate2 LoadServerCertificate(TcpTlsConfiguration tlsConfig)
+    {
+        if (string.IsNullOrWhiteSpace(tlsConfig.CertificatePath))
+        {
+            throw new InvalidOperationException("TCP TLS certificate path is empty.");
+        }
+
+        return string.IsNullOrEmpty(tlsConfig.CertificatePassword)
+            ? new X509Certificate2(tlsConfig.CertificatePath)
+            : new X509Certificate2(tlsConfig.CertificatePath, tlsConfig.CertificatePassword);
     }
 }

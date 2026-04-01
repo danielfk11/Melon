@@ -50,6 +50,17 @@
         .logo { display:flex; align-items:center; gap:.6rem; font-size:1.15rem; font-weight:700; letter-spacing:-.02em; }
         .logo svg { width:28px; height:28px; }
         .header-right { display:flex; align-items:center; gap:1.2rem; }
+        .api-key-input {
+            width: 220px;
+            padding: .35rem .55rem;
+            font-size: .75rem;
+            background: var(--surface2);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .api-key-input::placeholder { color: var(--text-dim); }
+        .api-key-input:focus { outline: none; border-color: var(--accent); }
         .status-pill {
             display:flex; align-items:center; gap:.4rem;
             background: var(--surface2); border:1px solid var(--border);
@@ -202,7 +213,11 @@
         .empty-state { text-align:center; padding:2.5rem 1rem; color:var(--text-dim); }
         .empty-state .icon { font-size:2rem; margin-bottom:.5rem; opacity:.5; }
         .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
-        @media(max-width:768px) { .grid-2 { grid-template-columns:1fr; } .metrics-row { grid-template-columns:repeat(2,1fr); } }
+        @media(max-width:768px) {
+            .grid-2 { grid-template-columns:1fr; }
+            .metrics-row { grid-template-columns:repeat(2,1fr); }
+            .api-key-input { width: 160px; }
+        }
         .mono { font-family:'SF Mono','Fira Code',monospace; font-size:.82rem; }
         .idle-text { color:var(--text-dim); font-size:.78rem; }
         .kv-grid { display:grid; grid-template-columns: auto 1fr; gap:.4rem 1.2rem; font-size:.82rem; }
@@ -221,6 +236,12 @@
             MelonMQ
         </div>
         <div class="header-right">
+            <input
+                type="password"
+                v-model="adminApiKey"
+                @change="applyAdminApiKey"
+                class="api-key-input"
+                placeholder="X-Api-Key (optional)">
             <span class="uptime-text" v-if="stats?.uptime">⏱ {{ formatUptime(stats.uptime) }}</span>
             <div class="status-pill">
                 <span class="status-dot" :class="healthClass"></span>
@@ -543,6 +564,7 @@ createApp({
             loading: true,
             fetchError: null,
             toast: null,
+            adminApiKey: '',
             newQueue: { name:'', durable:true, dlq:'', ttl:null },
             pub: { queue:'', body:'', persistent:false, ttl:null },
             pubResult: null,
@@ -651,6 +673,16 @@ createApp({
             this.toast = { type, text };
             setTimeout(() => this.toast = null, 3500);
         },
+        applyAdminApiKey() {
+            const key = this.adminApiKey.trim();
+            if (key) {
+                axios.defaults.headers.common['X-Api-Key'] = key;
+                localStorage.setItem('melon.adminApiKey', key);
+            } else {
+                delete axios.defaults.headers.common['X-Api-Key'];
+                localStorage.removeItem('melon.adminApiKey');
+            }
+        },
         async createQueue() {
             const n = this.newQueue.name.trim();
             if (!n) return this.showToast('error','Queue name is required');
@@ -725,7 +757,10 @@ createApp({
         },
     },
     async mounted() {
+        this.adminApiKey = localStorage.getItem('melon.adminApiKey') || '';
+        this.applyAdminApiKey();
         await this.refresh();
+        await this.fetchGcStatus();
         this._interval = setInterval(() => {
             this.fetchHealth();
             this.fetchStats();

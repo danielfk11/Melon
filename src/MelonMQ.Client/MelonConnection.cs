@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
 using System.IO.Pipelines;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading.Channels;
 using MelonMQ.Client.Protocol;
 using MelonMQ.Protocol;
@@ -15,16 +18,17 @@ public class MelonConnection : IDisposable, IAsyncDisposable
     private readonly PipeWriter _outgoingWriter;
     private readonly PipeReader _outgoingReader;
     private readonly PipeWriter _incomingWriter;
-    private readonly NetworkStream _stream;
+    private readonly Stream _stream;
     private readonly CancellationTokenSource _cancellationTokenSource;
     private readonly ConcurrentDictionary<ulong, TaskCompletionSource<Frame>> _pendingRequests = new();
     private readonly Task _readerTask;
     private readonly Task _writerTask;
     private readonly Task _networkReaderTask;
+    private readonly TimeSpan _heartbeatInterval;
     private ulong _nextCorrelationId = 1;
     private bool _disposed;
 
-    private MelonConnection(TcpClient tcpClient, NetworkStream stream, PipeReader incomingReader, PipeWriter outgoingWriter, PipeReader outgoingReader, PipeWriter incomingWriter)
+    private MelonConnection(TcpClient tcpClient, Stream stream, PipeReader incomingReader, PipeWriter outgoingWriter, PipeReader outgoingReader, PipeWriter incomingWriter, TimeSpan heartbeatInterval)
     {
         _tcpClient = tcpClient;
         _stream = stream;
@@ -32,6 +36,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         _outgoingWriter = outgoingWriter;
         _outgoingReader = outgoingReader;
         _incomingWriter = incomingWriter;
+        _heartbeatInterval = heartbeatInterval > TimeSpan.Zero ? heartbeatInterval : TimeSpan.FromSeconds(10);
         _cancellationTokenSource = new CancellationTokenSource();
         
         _readerTask = Task.Run(ProcessIncomingFrames);
@@ -44,18 +49,65 @@ public class MelonConnection : IDisposable, IAsyncDisposable
 
     public static async Task<MelonConnection> ConnectAsync(string connectionString, MelonConnectionOptions? options = null, CancellationToken cancellationToken = default)
     {
+        options ??= new MelonConnectionOptions();
+
         var uri = new Uri(connectionString);
+        if (!string.Equals(uri.Scheme, "melon", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(uri.Scheme, "melons", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Unsupported connection scheme '{uri.Scheme}'. Use melon:// or melons://.");
+        }
+
         var host = uri.Host;
         var port = uri.Port > 0 ? uri.Port : 5672;
+        var useTls = options.UseTls || string.Equals(uri.Scheme, "melons", StringComparison.OrdinalIgnoreCase);
 
-        var retryPolicy = options?.RetryPolicy;
+        var retryPolicy = options.RetryPolicy;
         var tcpClient = await ConnectionHelper.ConnectWithRetryAsync(host, port, retryPolicy, cancellationToken);
-        
-        var stream = tcpClient.GetStream();
+
+        FrameSerializer.ConfigureMaxFrameSize(MessageSizePolicy.ComputeMaxFrameSizeBytes(options.MaxMessageSize));
+
+        Stream stream = tcpClient.GetStream();
+        if (useTls)
+        {
+            var sslStream = new SslStream(
+                stream,
+                leaveInnerStreamOpen: false,
+                (_, _, _, sslPolicyErrors) =>
+                {
+                    if (options.AllowUntrustedServerCertificate)
+                    {
+                        return true;
+                    }
+
+                    return sslPolicyErrors == SslPolicyErrors.None;
+                });
+
+            var sslOptions = new SslClientAuthenticationOptions
+            {
+                TargetHost = options.TlsTargetHost ?? host,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = options.CheckCertificateRevocation
+                    ? X509RevocationMode.Online
+                    : X509RevocationMode.NoCheck,
+                ClientCertificates = options.ClientCertificates
+            };
+
+            await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken);
+            stream = sslStream;
+        }
+
         var incomingPipe = new Pipe(); // For data from server to client
         var outgoingPipe = new Pipe(); // For data from client to server
         
-        var connection = new MelonConnection(tcpClient, stream, incomingPipe.Reader, outgoingPipe.Writer, outgoingPipe.Reader, incomingPipe.Writer);
+        var connection = new MelonConnection(
+            tcpClient,
+            stream,
+            incomingPipe.Reader,
+            outgoingPipe.Writer,
+            outgoingPipe.Reader,
+            incomingPipe.Writer,
+            options.HeartbeatInterval);
         
         return connection;
     }
@@ -71,7 +123,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
             throw new ObjectDisposedException(nameof(MelonConnection));
 
         var correlationId = Interlocked.Increment(ref _nextCorrelationId);
-        var tcs = new TaskCompletionSource<Frame>();
+        var tcs = new TaskCompletionSource<Frame>(TaskCreationOptions.RunContinuationsAsynchronously);
         
         _pendingRequests[correlationId] = tcs;
 
@@ -80,12 +132,15 @@ public class MelonConnection : IDisposable, IAsyncDisposable
             FrameSerializer.WriteFrame(_outgoingWriter, type, correlationId, payload);
             await _outgoingWriter.FlushAsync(cancellationToken);
 
-            using var registration = cancellationToken.Register(() => tcs.TrySetCanceled());
+            using var registration = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
             return await tcs.Task;
         }
         catch (Exception ex)
         {
-            tcs.TrySetException(ex);
+            if (!tcs.Task.IsCompleted)
+            {
+                tcs.TrySetException(ex);
+            }
             throw;
         }
         finally
@@ -127,9 +182,9 @@ public class MelonConnection : IDisposable, IAsyncDisposable
                 await _incomingWriter.FlushAsync(cancellationToken);
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Connection closed
+            FailPendingRequests(new InvalidOperationException($"Connection lost while reading: {ex.Message}", ex));
         }
         finally
         {
@@ -160,9 +215,9 @@ public class MelonConnection : IDisposable, IAsyncDisposable
                 _outgoingReader.AdvanceTo(buffer.End);
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Connection closed
+            FailPendingRequests(new InvalidOperationException($"Connection lost while writing: {ex.Message}", ex));
         }
     }
 
@@ -174,7 +229,10 @@ public class MelonConnection : IDisposable, IAsyncDisposable
             {
                 var frame = await FrameSerializer.ReadFrameAsync(_incomingReader, _cancellationTokenSource.Token);
                 if (frame == null)
+                {
+                    FailPendingRequests(new InvalidOperationException("Connection closed by remote host."));
                     break;
+                }
 
                 if (_pendingRequests.TryRemove(frame.CorrelationId, out var tcs))
                 {
@@ -188,10 +246,17 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Connection error - complete all pending requests
-            foreach (var tcs in _pendingRequests.Values)
+            FailPendingRequests(new InvalidOperationException($"Connection lost: {ex.Message}", ex));
+        }
+    }
+
+    private void FailPendingRequests(Exception ex)
+    {
+        foreach (var pending in _pendingRequests.ToArray())
+        {
+            if (_pendingRequests.TryRemove(pending.Key, out var tcs))
             {
-                tcs.TrySetException(new InvalidOperationException($"Connection lost: {ex.Message}"));
+                tcs.TrySetException(ex);
             }
         }
     }
@@ -244,7 +309,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested && !_disposed)
             {
-                await Task.Delay(10000, _cancellationTokenSource.Token); // Every 10 seconds
+                await Task.Delay(_heartbeatInterval, _cancellationTokenSource.Token);
                 SendFrame(MessageType.Heartbeat);
             }
         }
@@ -259,7 +324,9 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
+        FailPendingRequests(new ObjectDisposedException(nameof(MelonConnection), "Connection was disposed."));
         _cancellationTokenSource.Cancel();
+        _stream.Dispose();
         _tcpClient.Close();
         _cancellationTokenSource.Dispose();
     }
@@ -269,6 +336,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
+        FailPendingRequests(new ObjectDisposedException(nameof(MelonConnection), "Connection was disposed."));
         _cancellationTokenSource.Cancel();
         
         try
@@ -279,6 +347,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         }
         catch { }
 
+        await _stream.DisposeAsync();
         _tcpClient.Close();
         _cancellationTokenSource.Dispose();
     }

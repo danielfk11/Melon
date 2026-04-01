@@ -14,6 +14,10 @@
 const http = require('http');
 const { connect, HOST } = require('./protocol');
 
+function isSuccess(frame) {
+  return frame && frame.type !== 'ERROR' && frame.payload?.success !== false;
+}
+
 const HTTP_PORT = parseInt(process.env.MELON_HTTP_PORT || '9090', 10);
 const PREFETCH = 50;
 const IDLE_TIMEOUT_MS = 30_000;
@@ -61,7 +65,7 @@ function fetchQueues() {
   console.log(`Subscribing to ${queues.length} queues...\n`);
   for (const q of queues) {
     const sub = await request('CONSUMESUBSCRIBE', { queue: q });
-    const icon = sub.type === 'SUCCESS' ? '✓' : '✗';
+    const icon = isSuccess(sub) ? '✓' : '✗';
     console.log(`  ${icon} ${q}`);
   }
 
@@ -93,7 +97,8 @@ function fetchQueues() {
     // ACK
     const ackId = send('ACK', { deliveryTag: p.deliveryTag });
     waitFor(ackId, 3000).then((r) => {
-      console.log(`       ✓ ACK → ${r.type}`);
+      const status = isSuccess(r) ? '✓' : '✗';
+      console.log(`       ${status} ACK → ${r.type}`);
     }).catch(() => {});
   });
 

@@ -88,6 +88,11 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             var errorMessage = response.Payload?.GetProperty("message").GetString() ?? "Unknown error";
             throw new InvalidOperationException($"Failed to ack message: {errorMessage}");
         }
+
+        if (response.Payload?.TryGetProperty("success", out var successElement) == true && !successElement.GetBoolean())
+        {
+            throw new InvalidOperationException("ACK was rejected by the broker.");
+        }
     }
 
     public async Task NackAsync(ulong deliveryTag, bool requeue = true, CancellationToken cancellationToken = default)
@@ -99,6 +104,11 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         {
             var errorMessage = response.Payload?.GetProperty("message").GetString() ?? "Unknown error";
             throw new InvalidOperationException($"Failed to nack message: {errorMessage}");
+        }
+
+        if (response.Payload?.TryGetProperty("success", out var successElement) == true && !successElement.GetBoolean())
+        {
+            throw new InvalidOperationException("NACK was rejected by the broker.");
         }
     }
 

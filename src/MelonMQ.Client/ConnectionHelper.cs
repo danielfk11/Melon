@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 
 namespace MelonMQ.Client;
 
@@ -71,4 +72,10 @@ public class MelonConnectionOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(10);
     public bool AutoReconnect { get; set; } = true;
     public int MaxChannels { get; set; } = 100;
+    public bool UseTls { get; set; } = false;
+    public bool AllowUntrustedServerCertificate { get; set; } = false;
+    public string? TlsTargetHost { get; set; }
+    public bool CheckCertificateRevocation { get; set; } = true;
+    public X509CertificateCollection? ClientCertificates { get; set; }
+    public int MaxMessageSize { get; set; } = 1024 * 1024;
 }

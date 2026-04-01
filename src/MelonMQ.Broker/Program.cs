@@ -1,13 +1,15 @@
 using MelonMQ.Broker.Core;
 using MelonMQ.Broker.Http;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Bind and validate configuration
 var melonConfig = new MelonMQConfiguration();
 builder.Configuration.GetSection("MelonMQ").Bind(melonConfig);
-melonConfig.ValidateConfiguration();
+melonConfig.ValidateConfiguration(builder.Environment.IsProduction());
 builder.Services.AddSingleton(melonConfig);
 
 // Configure services
@@ -22,7 +24,7 @@ builder.Services.AddCors(options =>
                   .AllowAnyHeader()
                   .AllowAnyMethod();
         }
-        else
+        else if (builder.Environment.IsDevelopment())
         {
             policy.AllowAnyOrigin()
                   .AllowAnyHeader()
@@ -50,8 +52,11 @@ builder.Services.AddSingleton<TcpServer>(provider =>
     return new TcpServer(queueManager, connectionManager, config, logger, metrics);
 });
 
-builder.Services.AddHostedService<MelonMQService>();
-builder.Services.AddHostedService<QueueGarbageCollector>();
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<MelonMQService>();
+    builder.Services.AddHostedService<QueueGarbageCollector>();
+}
 
 var app = builder.Build();
 
@@ -59,6 +64,13 @@ var app = builder.Build();
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    await next();
+});
 
 // Configure HTTP endpoints
 app.Urls.Add($"http://localhost:{melonConfig.HttpPort}");
@@ -67,8 +79,11 @@ app.MapGet("/", () => Results.Redirect("/index.html"));
 app.MapGet("/admin", () => Results.Redirect("/index.html"));
 app.MapGet("/management", () => Results.Redirect("/index.html"));
 
-app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager) =>
+app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        return Results.Unauthorized();
+
     var isListening = tcpServer.IsListening;
     var status = isListening ? "healthy" : "degraded";
     
@@ -81,8 +96,11 @@ app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager)
     });
 });
 
-app.MapGet("/queues", (QueueManager queueManager) =>
+app.MapGet("/queues", (QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        return Results.Unauthorized();
+
     var queues = queueManager.GetAllQueues().Select(q => new
     {
         name = q.Name,
@@ -95,8 +113,11 @@ app.MapGet("/queues", (QueueManager queueManager) =>
     return Results.Ok(new { queues = queues });
 });
 
-app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics) =>
+app.MapGet("/stats", (HttpContext context, QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics) =>
 {
+    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        return Results.Unauthorized();
+
     var queues = queueManager.GetAllQueues().Select(q => new
     {
         name = q.Name,
@@ -108,7 +129,7 @@ app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionMan
 
     var allMetrics = metrics.GetAllMetrics();
 
-    return new
+    return Results.Ok(new
     {
         queues = queues,
         connections = connectionManager.ConnectionCount,
@@ -116,14 +137,17 @@ app.MapGet("/stats", (QueueManager queueManager, ConnectionManager connectionMan
         metrics = allMetrics,
         uptime = DateTime.UtcNow.Subtract(Process.GetCurrentProcess().StartTime.ToUniversalTime()),
         timestamp = DateTimeOffset.UtcNow
-    };
+    });
 });
 
-app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueManager) =>
+app.MapPost("/queues/declare", (QueueDeclareRequest request, QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context))
+        return Results.Unauthorized();
+
     try
     {
-        var queue = queueManager.DeclareQueue(
+        queueManager.DeclareQueue(
             request.Name, 
             request.Durable, 
             request.DeadLetterQueue, 
@@ -159,8 +183,11 @@ app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager q
     }
 });
 
-app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishRequest request, QueueManager queueManager) =>
+app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishRequest request, QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context))
+        return Results.Unauthorized();
+
     var queue = queueManager.GetQueue(queueName);
     if (queue == null)
     {
@@ -170,14 +197,25 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
     try
     {
         var body = System.Text.Encoding.UTF8.GetBytes(request.Message);
+        if (body.Length > melonConfig.MaxMessageSize)
+        {
+            return Results.BadRequest(new
+            {
+                error = $"Message size ({body.Length} bytes) exceeds maximum allowed ({melonConfig.MaxMessageSize} bytes)"
+            });
+        }
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var effectiveTtlMs = request.TtlMs ?? queue.DefaultTtlMs;
+
         var message = new QueueMessage
         {
             MessageId = request.MessageId ?? Guid.NewGuid(),
             Body = new ReadOnlyMemory<byte>(body),
-            EnqueuedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            EnqueuedAt = now,
             Persistent = request.Persistent,
-            ExpiresAt = request.TtlMs.HasValue 
-                ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + request.TtlMs.Value 
+            ExpiresAt = effectiveTtlMs.HasValue
+                ? now + effectiveTtlMs.Value
                 : null
         };
 
@@ -190,8 +228,11 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
     }
 });
 
-app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager queueManager) =>
+app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        return Results.Unauthorized();
+
     var queue = queueManager.GetQueue(queueName);
     if (queue == null)
     {
@@ -234,12 +275,34 @@ app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation("MelonMQ Broker starting...");
 
-// Helper: validate admin API key for destructive endpoints
-bool ValidateAdminApiKey(HttpContext context)
+// Helper: validate admin API key for HTTP write/admin endpoints
+bool ValidateAdminApiKey(HttpContext context, bool readOnlyEndpoint = false)
 {
-    if (!melonConfig.Security.HasAdminApiKey) return true;
+    if (readOnlyEndpoint && !melonConfig.Security.ProtectReadEndpoints)
+    {
+        return true;
+    }
+
+    if (!melonConfig.Security.RequireAdminApiKey)
+    {
+        return true;
+    }
+
+    if (!melonConfig.Security.HasAdminApiKey)
+    {
+        return false;
+    }
+
     var apiKey = context.Request.Headers["X-Api-Key"].FirstOrDefault();
-    return apiKey == melonConfig.Security.AdminApiKey;
+    if (string.IsNullOrEmpty(apiKey))
+    {
+        return false;
+    }
+
+    var providedBytes = Encoding.UTF8.GetBytes(apiKey);
+    var expectedBytes = Encoding.UTF8.GetBytes(melonConfig.Security.AdminApiKey);
+    return providedBytes.Length == expectedBytes.Length &&
+           CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
 }
 
 // Queue deletion endpoint
@@ -257,8 +320,11 @@ app.MapDelete("/queues/{queueName}", (string queueName, QueueManager queueManage
 });
 
 // List inactive queues eligible for cleanup
-app.MapGet("/queues/inactive", (QueueManager queueManager) =>
+app.MapGet("/queues/inactive", (QueueManager queueManager, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        return Results.Unauthorized();
+
     var threshold = melonConfig.QueueGC.InactiveThresholdSeconds;
     var inactiveQueues = queueManager.GetInactiveQueues(threshold)
         .Select(q => new
@@ -295,8 +361,11 @@ app.MapPost("/queues/gc", (QueueManager queueManager, HttpContext context) =>
 });
 
 // GC configuration status
-app.MapGet("/queues/gc/status", (QueueManager queueManager, MelonMetrics metrics) =>
+app.MapGet("/queues/gc/status", (QueueManager queueManager, MelonMetrics metrics, HttpContext context) =>
 {
+    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        return Results.Unauthorized();
+
     return Results.Ok(new
     {
         enabled = melonConfig.QueueGC.Enabled,
@@ -323,3 +392,5 @@ public record PublishRequest(
     bool Persistent = false,
     int? TtlMs = null,
     Guid? MessageId = null);
+
+public partial class Program { }

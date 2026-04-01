@@ -1,0 +1,38 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "dotnet-test-sln",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"MelonMQ.sln",
+				"--nologo"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "dotnet-test-sln-2",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"MelonMQ.sln",
+				"--nologo"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "dotnet-test-sln-3",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"MelonMQ.sln",
+				"--nologo"
+			],
+			"isBackground": false
+		}
+	]
+}

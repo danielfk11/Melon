@@ -41,6 +41,7 @@ Edite o `appsettings.json` na raiz do broker:
 {
   "MelonMQ": {
     "TcpPort": 5672,
+    "TcpBindAddress": "127.0.0.1",
     "HttpPort": 9090,
     "DataDirectory": "data",
     "BatchFlushMs": 10,
@@ -54,14 +55,16 @@ Edite o `appsettings.json` na raiz do broker:
       "RequireAuth": false,
       "JwtSecret": "",
       "JwtExpirationMinutes": 60,
-      "AllowedOrigins": []
+      "AllowedOrigins": [],
+      "AdminApiKey": "",
+      "Users": {}
     },
     "QueueGC": {
       "Enabled": true,
       "IntervalSeconds": 60,
       "InactiveThresholdSeconds": 300,
-      "OnlyNonDurable": false,
-      "MaxQueues": 0
+      "OnlyNonDurable": true,
+      "MaxQueues": 1000
     }
   }
 }
@@ -76,8 +79,21 @@ Remove automaticamente filas vazias e inativas para evitar acúmulo de filas ór
 | `Enabled` | `true` | Ativa/desativa o GC |
 | `IntervalSeconds` | `60` | Intervalo entre execuções |
 | `InactiveThresholdSeconds` | `300` | Tempo ocioso antes da remoção |
-| `OnlyNonDurable` | `false` | Se `true`, só remove filas não-duráveis |
-| `MaxQueues` | `0` | Limite de filas (0 = sem limite) |
+| `OnlyNonDurable` | `true` | Se `true`, só remove filas não-duráveis |
+| `MaxQueues` | `1000` | Limite de filas (0 = sem limite) |
+
+### Segurança HTTP
+
+Se `MelonMQ:Security:AdminApiKey` estiver configurado, endpoints HTTP de escrita/administrativos exigem o header `X-Api-Key`.
+
+Exemplo:
+
+```bash
+curl -X POST http://localhost:9090/queues/declare \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: <sua-chave>" \
+  -d '{"name":"minha-fila","durable":true}'
+```
 
 ## Cliente .NET
 
