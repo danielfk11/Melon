@@ -302,6 +302,35 @@ public class MessageQueue : IDisposable
             toRequeue.Count, connectionId);
     }
 
+    /// <summary>
+    /// Requeues all in-flight messages whose connection is no longer active.
+    /// Called when a new consumer subscribes so stale in-flight messages from
+    /// dead connections are recovered immediately instead of waiting for the
+    /// 5-minute GC expiry window.
+    /// </summary>
+    public async Task RequeuePendingMessagesForDeadConnections(ISet<string> activeConnectionIds)
+    {
+        var toRequeue = _inFlightMessages.Values
+            .Where(x => !activeConnectionIds.Contains(x.ConnectionId))
+            .ToList();
+
+        if (toRequeue.Count == 0) return;
+
+        foreach (var inFlight in toRequeue)
+        {
+            if (_inFlightMessages.TryRemove(inFlight.DeliveryTag, out _))
+            {
+                inFlight.Message.Redelivered = true;
+                inFlight.Message.DeliveryCount++;
+                await EnqueueAsync(inFlight.Message);
+            }
+        }
+
+        _logger.LogInformation(
+            "Recovered {Count} in-flight messages from dead connections in queue '{Queue}'",
+            toRequeue.Count, _config.Name);
+    }
+
     public async Task PurgeAsync(CancellationToken cancellationToken = default)
     {
         await _loadGate.Task;
@@ -829,6 +858,54 @@ public class MessageQueue : IDisposable
                     inFlight.Message.MessageId);
             }
         }
+    }
+
+    /// <summary>
+    /// Drains expired pending messages from the channel without an active consumer.
+    /// This keeps PendingCount accurate even when no consumer is connected.
+    /// Uses TryRead so it never blocks — stops as soon as the channel is empty
+    /// or the next message is not yet expired.
+    /// </summary>
+    public async Task DrainExpiredPendingAsync()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var drained = 0;
+
+        // Peek at each message; if expired discard it, otherwise put it back.
+        // Because Channel<T> has no peek, we read and re-enqueue non-expired ones.
+        // To avoid draining the entire channel, we only process up to the current
+        // PendingCount snapshot — messages published after this call are not touched.
+        var limit = _pendingCount;
+        for (var i = 0; i < limit; i++)
+        {
+            if (!_reader.TryRead(out var message))
+                break;
+
+            now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (_ackedMessageIds.ContainsKey(message.MessageId))
+            {
+                // Already processed — drop silently.
+                Interlocked.Decrement(ref _pendingCount);
+                drained++;
+                continue;
+            }
+
+            if (message.ExpiresAt.HasValue && message.ExpiresAt <= now)
+            {
+                await HandleDeadLetter(message);
+                Interlocked.Decrement(ref _pendingCount);
+                drained++;
+                continue;
+            }
+
+            // Message is valid — put it back at the end of the channel.
+            // WriteAsync won't block in practice because we just freed a slot.
+            await _writer.WriteAsync(message);
+        }
+
+        if (drained > 0)
+            _logger.LogDebug("Drained {Count} expired/stale pending messages from queue {QueueName}", drained, _config.Name);
     }
 
     public IEnumerable<ulong> GetInFlightDeliveryTags()

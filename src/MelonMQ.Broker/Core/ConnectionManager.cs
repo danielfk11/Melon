@@ -19,7 +19,7 @@ public class ClientConnection : IDisposable
     public Stream Stream { get; }
     public bool IsAuthenticated { get; set; }
     public int Prefetch { get; set; } = 100;
-    public ConcurrentDictionary<string, CancellationTokenSource> ActiveConsumers { get; } = new();
+    public ConcurrentDictionary<string, (CancellationTokenSource Cts, Task Task)> ActiveConsumers { get; } = new();
     public long LastHeartbeat { get; set; }
     public SemaphoreSlim WriteLock { get; } = new(1, 1);
     /// <summary>
@@ -54,9 +54,9 @@ public class ClientConnection : IDisposable
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
             return;
 
-        foreach (var consumer in ActiveConsumers.Values)
+        foreach (var (cts, _) in ActiveConsumers.Values)
         {
-            try { consumer.Cancel(); consumer.Dispose(); } catch { }
+            try { cts.Cancel(); cts.Dispose(); } catch { }
         }
         ActiveConsumers.Clear();
 

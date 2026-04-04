@@ -13,6 +13,7 @@ Message broker leve escrito em C# com protocolo TCP binário e API HTTP.
 - Garbage collector de filas inativas
 - Prefetch configurável por consumidor
 - Heartbeat e detecção de conexões mortas
+- Recuperação automática de mensagens in-flight de conexões encerradas
 - Métricas Prometheus e OpenTelemetry (OTLP)
 - Clustering com eleição de líder e replicação
 - Interface web de administração embutida
@@ -33,6 +34,8 @@ O broker sobe na porta TCP `5672` e HTTP `9090`.
 curl http://localhost:9090/health
 curl http://localhost:9090/stats
 ```
+
+A interface web de administração fica disponível em `http://localhost:9090`.
 
 ## Configuração
 
@@ -94,7 +97,7 @@ Edite o `appsettings.json` na raiz do broker:
 
 ### Queue Garbage Collector
 
-Remove automaticamente filas vazias e inativas para evitar acúmulo de filas órfãs.
+Remove automaticamente filas vazias e inativas para evitar acúmulo de filas órfãs. Também drena mensagens expiradas que ainda estão pendentes no canal de cada fila.
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
@@ -116,6 +119,101 @@ curl -X POST http://localhost:9090/queues/declare \
   -H "X-Api-Key: <sua-chave>" \
   -d '{"name":"minha-fila","durable":true}'
 ```
+
+## Cliente Node.js
+
+O diretório `samples/node-tests/` contém um cliente TCP de referência em Node.js puro (sem dependências externas).
+
+### Protocolo TCP
+
+O protocolo usa framing com prefixo de 4 bytes em little-endian seguido de JSON UTF-8:
+
+```
+[ 4 bytes LE uint32 = tamanho do JSON ][ JSON em UTF-8 ]
+```
+
+Cada frame tem o formato:
+
+```json
+{ "type": "PUBLISH", "corrId": 1, "payload": { ... } }
+```
+
+- `type`: tipo do comando (ver tabela abaixo)
+- `corrId`: ID de correlação da requisição (inteiro crescente, começa em 1)
+- `payload`: objeto específico de cada comando
+- Frames de entrega (`DELIVER`) sempre chegam com `corrId: 0` e devem ser tratados separadamente
+
+### Exemplo mínimo (Node.js)
+
+```js
+const { connect } = require('./samples/node-tests/protocol');
+
+(async () => {
+  const { socket, request, send, waitFor } = await connect();
+
+  // 1. Autenticar
+  await request('AUTH', { username: 'guest', password: 'guest' });
+
+  // 2. Declarar fila
+  await request('DECLAREQUEUE', { queue: 'minha-fila', durable: true, defaultTtlMs: 300000 });
+
+  // 3. Publicar
+  const bodyBase64 = Buffer.from('Hello MelonMQ', 'utf-8').toString('base64');
+  await request('PUBLISH', { queue: 'minha-fila', bodyBase64, persistent: true });
+
+  socket.destroy();
+})();
+```
+
+### Consumindo via TCP (Node.js)
+
+> **Importante:** registre o listener de `deliver` **antes** de enviar os `CONSUMESUBSCRIBE`.
+> O broker começa a entregar mensagens assim que confirma a assinatura — frames que chegam
+> antes do listener ser registrado são descartados silenciosamente pelo EventEmitter do Node.
+
+```js
+const { connect } = require('./samples/node-tests/protocol');
+
+(async () => {
+  const { socket, request, send, waitFor } = await connect();
+
+  await request('AUTH', { username: 'guest', password: 'guest' });
+  await request('SETPREFETCH', { prefetch: 50 });
+
+  // PASSO 1: registrar o listener ANTES de assinar qualquer fila
+  socket.on('deliver', (frame) => {
+    const p = frame.payload;
+    const body = Buffer.from(p.bodyBase64, 'base64').toString('utf-8');
+    console.log(`[${p.queue}] ${body}  tag=${p.deliveryTag}`);
+
+    // ACK assíncrono — não bloqueia a recepção de novas mensagens
+    const ackId = send('ACK', { deliveryTag: p.deliveryTag });
+    waitFor(ackId, 5000).then(r => console.log('ACK →', r.type)).catch(() => {});
+  });
+
+  // PASSO 2: assinar as filas depois que o listener já está ativo
+  await request('CONSUMESUBSCRIBE', { queue: 'minha-fila' });
+})();
+```
+
+### Comandos TCP
+
+| Tipo | Direção | Payload (requisição) | Payload (resposta) |
+|------|---------|---------------------|--------------------|
+| `AUTH` | C→S | `{ username, password }` | `{ success }` |
+| `DECLAREQUEUE` | C→S | `{ queue, durable?, deadLetterQueue?, defaultTtlMs? }` | `{ success, queue }` |
+| `PUBLISH` | C→S | `{ queue, bodyBase64, persistent?, ttlMs?, messageId?, headers? }` | `{ success, messageId }` |
+| `CONSUMESUBSCRIBE` | C→S | `{ queue }` | `{ success, queue }` |
+| `CONSUMEUNSUBSCRIBE` | C→S | `{ queue }` | `{ success }` |
+| `ACK` | C→S | `{ deliveryTag }` | `{ success }` |
+| `NACK` | C→S | `{ deliveryTag, requeue? }` | `{ success }` |
+| `SETPREFETCH` | C→S | `{ prefetch }` | `{ success }` |
+| `HEARTBEAT` | C↔S | `{}` | `{}` |
+| `DELIVER` | S→C | `{ queue, deliveryTag, bodyBase64, messageId, redelivered, headers }` | — |
+
+### DeliveryTag e JavaScript
+
+O `deliveryTag` é um inteiro de 64 bits gerado pelo broker. Para manter compatibilidade com o `Number.MAX_SAFE_INTEGER` do JavaScript (`2^53 - 1`), o broker limita o prefixo do tag a 21 bits, garantindo que todos os valores caibam com precisão em um `number` JS.
 
 ## Cliente .NET
 
@@ -184,7 +282,7 @@ Qualquer linguagem pode interagir com o broker via HTTP.
 # Criar fila
 curl -X POST http://localhost:9090/queues/declare \
   -H "Content-Type: application/json" \
-  -d '{"name":"minha-fila","durable":true,"deadLetterQueue":"minha-fila.dlq","defaultTtlMs":60000}'
+  -d '{"name":"minha-fila","durable":true,"deadLetterQueue":"minha-fila.dlq","defaultTtlMs":300000}'
 
 # Publicar
 curl -X POST http://localhost:9090/queues/minha-fila/publish \

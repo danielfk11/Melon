@@ -21,6 +21,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
     private readonly Stream _stream;
     private readonly CancellationTokenSource _cancellationTokenSource;
     private readonly ConcurrentDictionary<ulong, TaskCompletionSource<Frame>> _pendingRequests = new();
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly Task _readerTask;
     private readonly Task _writerTask;
     private readonly Task _networkReaderTask;
@@ -129,8 +130,16 @@ public class MelonConnection : IDisposable, IAsyncDisposable
 
         try
         {
-            FrameSerializer.WriteFrame(_outgoingWriter, type, correlationId, payload);
-            await _outgoingWriter.FlushAsync(cancellationToken);
+            await _writeLock.WaitAsync(cancellationToken);
+            try
+            {
+                FrameSerializer.WriteFrame(_outgoingWriter, type, correlationId, payload);
+                await _outgoingWriter.FlushAsync(cancellationToken);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
 
             using var registration = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
             return await tcs.Task;
@@ -155,15 +164,26 @@ public class MelonConnection : IDisposable, IAsyncDisposable
             return;
 
         var correlationId = Interlocked.Increment(ref _nextCorrelationId);
-        try
+        _ = Task.Run(async () =>
         {
-            FrameSerializer.WriteFrame(_outgoingWriter, type, correlationId, payload);
-            _ = _outgoingWriter.FlushAsync();
-        }
-        catch
-        {
-            // Ignore send errors for fire-and-forget messages
-        }
+            try
+            {
+                await _writeLock.WaitAsync(_cancellationTokenSource.Token);
+                try
+                {
+                    FrameSerializer.WriteFrame(_outgoingWriter, type, correlationId, payload);
+                    await _outgoingWriter.FlushAsync(_cancellationTokenSource.Token);
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
+            }
+            catch
+            {
+                // Ignore send errors for fire-and-forget messages
+            }
+        });
     }
 
     private async Task ReadFromNetworkAsync(CancellationToken cancellationToken)

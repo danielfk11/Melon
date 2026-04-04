@@ -228,6 +228,22 @@ public class TcpServer
 
             if (connection != null)
             {
+                // 1. Signal all consumer CTSs to stop.
+                foreach (var (cts, _) in connection.ActiveConsumers.Values)
+                    try { cts.Cancel(); } catch { }
+
+                // 2. Await all consumer tasks before touching _inFlightMessages.
+                //    Without this wait a consumer task that already called DequeueAsync
+                //    (message in _inFlightMessages) but hasn't checked CTS yet will race
+                //    with RequeuePendingMessagesForConnection: requeue puts the msg back
+                //    in the channel, the still-running consumer immediately dequeues it
+                //    again, tries to write on the dead socket, and leaves it stuck forever.
+                var pendingTasks = connection.ActiveConsumers.Values
+                    .Select(x => x.Task.ContinueWith(_ => { }, TaskScheduler.Default))
+                    .ToArray();
+                if (pendingTasks.Length > 0)
+                    await Task.WhenAll(pendingTasks);
+
                 try
                 {
                     // Clean up delivery tags for this connection
@@ -620,14 +636,23 @@ public class TcpServer
             return;
         }
 
-        // Cancel existing consumer for this queue if any
-        if (connection.ActiveConsumers.TryRemove(payload.Queue, out var existingCts))
+        // Cancel and await existing consumer for this queue if any
+        if (connection.ActiveConsumers.TryRemove(payload.Queue, out var existing))
         {
-            existingCts.Cancel();
+            try { existing.Cts.Cancel(); } catch { }
+            try { await existing.Task.ConfigureAwait(false); } catch { }
         }
 
+        // Immediately recover any in-flight messages for this queue that belong to
+        // dead connections. Without this, those messages would stay stuck for up to
+        // 5 minutes waiting for the GC expiry, invisible to this new consumer.
+        var activeConnectionIds = _connectionManager
+            .GetAllConnections()
+            .Select(c => c.Id)
+            .ToHashSet();
+        await queue.RequeuePendingMessagesForDeadConnections(activeConnectionIds);
+
         var consumerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        connection.ActiveConsumers[payload.Queue] = consumerCts;
 
         // Start consuming with prefetch control
         var inFlightKey = $"{connection.Id}:{payload.Queue}";
@@ -645,7 +670,7 @@ public class TcpServer
         };
         await WriteFrameAsync(connection, response);
 
-        _ = Task.Run(async () =>
+        var consumerTask = Task.Run(async () =>
         {
             try
             {
@@ -708,20 +733,10 @@ public class TcpServer
             finally
             {
                 _connectionInFlightCount.TryRemove(inFlightKey, out _);
-                // Re-queue any in-flight messages back to the queue when the consumer
-                // disconnects or re-subscribes, so they are not lost without a broker restart.
-                _ = Task.Run(async () =>
-                {
-                    try { await queue.RequeuePendingMessagesForConnection(connection.Id); }
-                    catch (ObjectDisposedException) { }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to requeue in-flight messages for connection {ConnectionId}", connection.Id);
-                    }
-                });
             }
         });
 
+        connection.ActiveConsumers[payload.Queue] = (consumerCts, consumerTask);
     }
 
     private async Task HandleAck(ClientConnection connection, Frame frame)

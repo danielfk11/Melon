@@ -61,17 +61,11 @@ function fetchQueues() {
   const pf = await request('SETPREFETCH', { prefetch: PREFETCH });
   console.log(`SetPrefetch(${PREFETCH}) → ${pf.type}\n`);
 
-  // 4. Subscribe to every queue
-  console.log(`Subscribing to ${queues.length} queues...\n`);
-  for (const q of queues) {
-    const sub = await request('CONSUMESUBSCRIBE', { queue: q });
-    const icon = isSuccess(sub) ? '✓' : '✗';
-    console.log(`  ${icon} ${q}`);
-  }
-
-  console.log(`\nWaiting for messages... (Ctrl+C or ${IDLE_TIMEOUT_MS / 1000}s idle to stop)\n`);
-
-  // 5. Consume loop
+  // 4 & 5. Register the DELIVER listener BEFORE subscribing.
+  // The broker starts delivering immediately after CONSUMESUBSCRIBE is confirmed.
+  // If the listener is registered after the subscribe loop, frames that arrive
+  // during subsequent 'await request(CONSUMESUBSCRIBE)' calls are emitted with no
+  // listener and silently dropped by Node's EventEmitter.
   let count = 0;
   let idleTimer;
 
@@ -84,7 +78,6 @@ function fetchQueues() {
       process.exit(0);
     }, IDLE_TIMEOUT_MS);
   }
-  resetIdle();
 
   socket.on('deliver', (frame) => {
     resetIdle();
@@ -100,6 +93,16 @@ function fetchQueues() {
       console.log(`       ${status} ACK → ${r.type}`);
     }).catch(() => {});
   });
+
+  console.log(`Subscribing to ${queues.length} queues...\n`);
+  for (const q of queues) {
+    const sub = await request('CONSUMESUBSCRIBE', { queue: q });
+    const icon = isSuccess(sub) ? '✓' : '✗';
+    console.log(`  ${icon} ${q}`);
+  }
+
+  console.log(`\nWaiting for messages... (Ctrl+C or ${IDLE_TIMEOUT_MS / 1000}s idle to stop)\n`);
+  resetIdle();
 
   // Graceful shutdown
   process.on('SIGINT', () => {

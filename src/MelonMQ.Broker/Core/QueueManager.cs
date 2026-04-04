@@ -111,7 +111,11 @@ public class QueueManager : IQueueManager, IDisposable
 
     public async Task CleanupExpiredMessages()
     {
-        var tasks = _queues.Values.Select(q => q.CleanupExpiredInFlightMessages());
+        var tasks = _queues.Values.Select(async q =>
+        {
+            await q.CleanupExpiredInFlightMessages();
+            await q.DrainExpiredPendingAsync();
+        });
         await Task.WhenAll(tasks);
     }
 

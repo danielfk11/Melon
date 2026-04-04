@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Simple and efficient message queue client for MelonMQ broker")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d1480a33050432bb411da131d7478f795ce6ae3d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+cb422106ede51327fcdeb850f9574dfa0f85e214")]
 [assembly: System.Reflection.AssemblyProductAttribute("MelonMQ.Client")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MelonMQ.Client")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
