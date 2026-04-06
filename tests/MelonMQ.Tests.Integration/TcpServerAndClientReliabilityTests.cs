@@ -40,7 +40,7 @@ public class TcpServerAndClientReliabilityTests
         {
             try
             {
-                await foreach (var message in channel.ConsumeAsync(queue, prefetch: 5, cts.Token))
+                await foreach (var message in channel.ConsumeAsync(queue, prefetch: 5, cancellationToken: cts.Token))
                 {
                     var body = Encoding.UTF8.GetString(message.Body.Span);
                     if (!seen.TryAdd(body, 0))
@@ -243,7 +243,7 @@ public class TcpServerAndClientReliabilityTests
     private static async Task<IncomingMessage?> ConsumeSingleAsync(MelonChannel channel, string queue, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
-        await using var enumerator = channel.ConsumeAsync(queue, prefetch: 1, cts.Token).GetAsyncEnumerator();
+        await using var enumerator = channel.ConsumeAsync(queue, prefetch: 1, cancellationToken: cts.Token).GetAsyncEnumerator();
 
         try
         {

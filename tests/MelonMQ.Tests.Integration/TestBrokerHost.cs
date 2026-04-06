@@ -69,7 +69,9 @@ internal sealed class TestBrokerHost : IAsyncDisposable
             ConnectionManager,
             Configuration,
             _loggerFactory.CreateLogger<TcpServer>(),
-            new MelonMetrics());
+            new MelonMetrics(),
+            exchangeManager: new MelonMQ.Broker.Core.ExchangeManager(
+                _loggerFactory.CreateLogger<MelonMQ.Broker.Core.ExchangeManager>()));
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)

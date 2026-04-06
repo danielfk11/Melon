@@ -130,6 +130,10 @@ public static class FrameSerializer
                 MessageType.SetPrefetch => JsonSerializer.Deserialize<SetPrefetchPayload>(payloadElement.GetRawText(), JsonOptions),
                 MessageType.Error => JsonSerializer.Deserialize<ErrorPayload>(payloadElement.GetRawText(), JsonOptions),
                 MessageType.Success => payloadElement.GetRawText(), // Success responses can be raw JSON
+                MessageType.DeclareExchange => JsonSerializer.Deserialize<DeclareExchangePayload>(payloadElement.GetRawText(), JsonOptions),
+                MessageType.BindQueue => JsonSerializer.Deserialize<BindQueuePayload>(payloadElement.GetRawText(), JsonOptions),
+                MessageType.UnbindQueue => JsonSerializer.Deserialize<UnbindQueuePayload>(payloadElement.GetRawText(), JsonOptions),
+                MessageType.StreamAck => JsonSerializer.Deserialize<StreamAckPayload>(payloadElement.GetRawText(), JsonOptions),
                 _ => null
             };
         }

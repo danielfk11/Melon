@@ -116,6 +116,7 @@ builder.Services.AddOpenTelemetry()
 builder.Services.AddSingleton<MelonMetrics>();
 builder.Services.AddSingleton<ClusterCoordinator>();
 builder.Services.AddSingleton<ConnectionManager>();
+builder.Services.AddSingleton<ExchangeManager>();
 builder.Services.AddSingleton<TcpServer>(provider =>
 {
     var config = provider.GetRequiredService<MelonMQConfiguration>();
@@ -124,7 +125,8 @@ builder.Services.AddSingleton<TcpServer>(provider =>
     var logger = provider.GetRequiredService<ILogger<TcpServer>>();
     var metrics = provider.GetRequiredService<MelonMetrics>();
     var clusterCoordinator = provider.GetRequiredService<ClusterCoordinator>();
-    return new TcpServer(queueManager, connectionManager, config, logger, metrics, clusterCoordinator);
+    var exchangeManager = provider.GetRequiredService<ExchangeManager>();
+    return new TcpServer(queueManager, connectionManager, config, logger, metrics, clusterCoordinator, exchangeManager);
 });
 
 if (!builder.Environment.IsEnvironment("Testing"))

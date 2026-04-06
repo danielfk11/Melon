@@ -6,6 +6,9 @@ namespace MelonMQ.Broker.Core;
 public class QueueManager : IQueueManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, MessageQueue> _queues = new();
+    private readonly ConcurrentDictionary<string, StreamQueue> _streamQueues = new();
+    // sourceQueueName → set of group-queue names (e.g. "_grp:tasks:workers")
+    private readonly ConcurrentDictionary<string, HashSet<string>> _groupQueuesBySource = new();
     private readonly string? _dataDirectory;
     private readonly ILogger<QueueManager> _logger;
     private readonly ILoggerFactory _loggerFactory;
@@ -171,11 +174,110 @@ public class QueueManager : IQueueManager, IDisposable
             .OrderByDescending(q => q.IdleTimeMs);
     }
 
+    // ── Stream queues ─────────────────────────────────────────────────────────
+
+    public StreamQueue DeclareStreamQueue(
+        string name,
+        bool durable,
+        int maxMessages = 100_000,
+        long? maxAgeMs = null)
+    {
+        ValidateQueueName(name);
+        return _streamQueues.GetOrAdd(name, _ =>
+        {
+            var q = new StreamQueue(
+                name,
+                durable,
+                maxMessages,
+                maxAgeMs,
+                _dataDirectory,
+                _loggerFactory.CreateLogger<StreamQueue>());
+            _logger.LogInformation("Declared stream queue '{Name}' (durable: {Durable})", name, durable);
+            return q;
+        });
+    }
+
+    public StreamQueue? GetStreamQueue(string name) =>
+        _streamQueues.TryGetValue(name, out var q) ? q : null;
+
+    public bool IsStreamQueue(string name) => _streamQueues.ContainsKey(name);
+
+    public bool DeleteStreamQueue(string name)
+    {
+        if (_streamQueues.TryRemove(name, out var q))
+        {
+            q.DeletePersistenceFile();
+            q.Dispose();
+            _logger.LogInformation("Deleted stream queue '{Name}'", name);
+            return true;
+        }
+        return false;
+    }
+
+    // ── Consumer group queues ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the internal name used for a group queue derived from a source queue.
+    /// </summary>
+    public static string GetGroupQueueName(string sourceQueue, string groupName) =>
+        $"_grp:{sourceQueue}:{groupName}";
+
+    /// <summary>
+    /// Creates (or returns) the virtual queue used by <paramref name="groupName"/>
+    /// when consuming from <paramref name="sourceQueue"/>.
+    /// The group queue is auto-durable when the source queue is durable.
+    /// </summary>
+    public MessageQueue DeclareGroupQueue(string sourceQueue, string groupName, bool durable)
+    {
+        var groupQueueName = GetGroupQueueName(sourceQueue, groupName);
+
+        // Internal group queue — bypass public name validation (colons are intentional separators)
+        var queue = _queues.GetOrAdd(groupQueueName, _ =>
+        {
+            var config = new QueueConfiguration { Name = groupQueueName, Durable = durable };
+            return new MessageQueue(
+                config,
+                _dataDirectory,
+                _loggerFactory.CreateLogger<MessageQueue>(),
+                queueResolver: GetQueue,
+                channelCapacity: _channelCapacity,
+                compactionThresholdMB: _compactionThresholdMB,
+                batchFlushMs: _batchFlushMs);
+        });
+
+        _groupQueuesBySource.AddOrUpdate(
+            sourceQueue,
+            _ => new HashSet<string>(StringComparer.Ordinal) { groupQueueName },
+            (_, set) =>
+            {
+                lock (set) { set.Add(groupQueueName); }
+                return set;
+            });
+
+        return queue;
+    }
+
+    /// <summary>
+    /// Returns all active group queues fanning out from <paramref name="sourceQueue"/>.
+    /// </summary>
+    public IEnumerable<MessageQueue> GetGroupQueues(string sourceQueue)
+    {
+        if (!_groupQueuesBySource.TryGetValue(sourceQueue, out var names))
+            return Enumerable.Empty<MessageQueue>();
+
+        HashSet<string> snapshot;
+        lock (names) { snapshot = new HashSet<string>(names, StringComparer.Ordinal); }
+
+        return snapshot
+            .Select(n => _queues.TryGetValue(n, out var q) ? q : null)
+            .Where(q => q != null)!;
+    }
+
     public void Dispose()
     {
         foreach (var queue in _queues.Values)
-        {
             queue.Dispose();
-        }
+        foreach (var q in _streamQueues.Values)
+            q.Dispose();
     }
 }

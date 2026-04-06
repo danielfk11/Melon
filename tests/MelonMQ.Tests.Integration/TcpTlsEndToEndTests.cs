@@ -82,7 +82,7 @@ public class TcpTlsEndToEndTests
     private static async Task<IncomingMessage?> ConsumeSingleAsync(MelonChannel channel, string queue, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
-        await using var enumerator = channel.ConsumeAsync(queue, prefetch: 1, cts.Token).GetAsyncEnumerator();
+        await using var enumerator = channel.ConsumeAsync(queue, prefetch: 1, cancellationToken: cts.Token).GetAsyncEnumerator();
 
         try
         {

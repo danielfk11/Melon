@@ -685,6 +685,13 @@ public class MessageQueue : IDisposable
                 }
             }
 
+            // Ungate BEFORE draining into the bounded channel.
+            // This prevents a deadlock when there are more persisted messages
+            // than the channel capacity (10 000): without consumers draining the
+            // channel, WriteAsync would block forever and _loadGate would never
+            // be set, making every subsequent EnqueueAsync hang permanently.
+            _loadGate.TrySetResult();
+
             foreach (var entry in orderedMessages.Values.OrderBy(x => x.Sequence))
             {
                 await _writer.WriteAsync(entry.Message);
@@ -698,10 +705,6 @@ public class MessageQueue : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to load persisted messages for queue {QueueName}", _config.Name);
-        }
-        finally
-        {
-            _loadGate.TrySetResult();
         }
     }
 

@@ -120,11 +120,7 @@ curl -X POST http://localhost:9090/queues/declare \
   -d '{"name":"minha-fila","durable":true}'
 ```
 
-## Cliente Node.js
-
-O diretório `samples/node-tests/` contém um cliente TCP de referência em Node.js puro (sem dependências externas).
-
-### Protocolo TCP
+## Protocolo TCP
 
 O protocolo usa framing com prefixo de 4 bytes em little-endian seguido de JSON UTF-8:
 
@@ -138,65 +134,13 @@ Cada frame tem o formato:
 { "type": "PUBLISH", "corrId": 1, "payload": { ... } }
 ```
 
-- `type`: tipo do comando (ver tabela abaixo)
+- `type`: tipo do comando
 - `corrId`: ID de correlação da requisição (inteiro crescente, começa em 1)
 - `payload`: objeto específico de cada comando
 - Frames de entrega (`DELIVER`) sempre chegam com `corrId: 0` e devem ser tratados separadamente
+- O corpo da mensagem é transmitido como `bodyBase64` (Base64 do payload em bytes)
 
-### Exemplo mínimo (Node.js)
-
-```js
-const { connect } = require('./samples/node-tests/protocol');
-
-(async () => {
-  const { socket, request, send, waitFor } = await connect();
-
-  // 1. Autenticar
-  await request('AUTH', { username: 'guest', password: 'guest' });
-
-  // 2. Declarar fila
-  await request('DECLAREQUEUE', { queue: 'minha-fila', durable: true, defaultTtlMs: 300000 });
-
-  // 3. Publicar
-  const bodyBase64 = Buffer.from('Hello MelonMQ', 'utf-8').toString('base64');
-  await request('PUBLISH', { queue: 'minha-fila', bodyBase64, persistent: true });
-
-  socket.destroy();
-})();
-```
-
-### Consumindo via TCP (Node.js)
-
-> **Importante:** registre o listener de `deliver` **antes** de enviar os `CONSUMESUBSCRIBE`.
-> O broker começa a entregar mensagens assim que confirma a assinatura — frames que chegam
-> antes do listener ser registrado são descartados silenciosamente pelo EventEmitter do Node.
-
-```js
-const { connect } = require('./samples/node-tests/protocol');
-
-(async () => {
-  const { socket, request, send, waitFor } = await connect();
-
-  await request('AUTH', { username: 'guest', password: 'guest' });
-  await request('SETPREFETCH', { prefetch: 50 });
-
-  // PASSO 1: registrar o listener ANTES de assinar qualquer fila
-  socket.on('deliver', (frame) => {
-    const p = frame.payload;
-    const body = Buffer.from(p.bodyBase64, 'base64').toString('utf-8');
-    console.log(`[${p.queue}] ${body}  tag=${p.deliveryTag}`);
-
-    // ACK assíncrono — não bloqueia a recepção de novas mensagens
-    const ackId = send('ACK', { deliveryTag: p.deliveryTag });
-    waitFor(ackId, 5000).then(r => console.log('ACK →', r.type)).catch(() => {});
-  });
-
-  // PASSO 2: assinar as filas depois que o listener já está ativo
-  await request('CONSUMESUBSCRIBE', { queue: 'minha-fila' });
-})();
-```
-
-### Comandos TCP
+### Comandos
 
 | Tipo | Direção | Payload (requisição) | Payload (resposta) |
 |------|---------|---------------------|--------------------|
@@ -211,9 +155,9 @@ const { connect } = require('./samples/node-tests/protocol');
 | `HEARTBEAT` | C↔S | `{}` | `{}` |
 | `DELIVER` | S→C | `{ queue, deliveryTag, bodyBase64, messageId, redelivered, headers }` | — |
 
-### DeliveryTag e JavaScript
+> **Atenção ao consumir:** registre o handler de `DELIVER` **antes** de enviar `CONSUMESUBSCRIBE`. O broker começa a entregar mensagens imediatamente após confirmar a assinatura.
 
-O `deliveryTag` é um inteiro de 64 bits gerado pelo broker. Para manter compatibilidade com o `Number.MAX_SAFE_INTEGER` do JavaScript (`2^53 - 1`), o broker limita o prefixo do tag a 21 bits, garantindo que todos os valores caibam com precisão em um `number` JS.
+> **DeliveryTag:** inteiro de 64 bits. Linguagens com limite de precisão em inteiros (ex: JavaScript com `Number.MAX_SAFE_INTEGER`) devem tratar o valor como string ou `BigInt`.
 
 ## Cliente .NET
 
@@ -336,6 +280,17 @@ Inclui testes unitários, de integração e benchmarks.
 - [x] Métricas (Prometheus/OpenTelemetry)
 - [x] Clustering
 - [ ] SDKs para outras linguagens
+
+## SDKs da comunidade
+
+O protocolo TCP do MelonMQ é aberto e simples de implementar em qualquer linguagem (veja a seção [Protocolo TCP](#protocolo-tcp)). Contribuições de SDKs são bem-vindas!
+
+Para criar um SDK:
+1. Implemente o framing: prefixo de 4 bytes LE + JSON UTF-8
+2. Gerencie `corrId` incrementalmente para correlacionar respostas
+3. Trate frames `DELIVER` (`corrId: 0`) separadamente dos demais
+4. Registre o handler de `DELIVER` antes de enviar `CONSUMESUBSCRIBE`
+5. Abra um PR ou issue com o link do repositório
 
 ## Licença
 

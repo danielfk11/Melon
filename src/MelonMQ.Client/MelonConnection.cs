@@ -307,7 +307,10 @@ public class MelonConnection : IDisposable, IAsyncDisposable
                     Body = Convert.FromBase64String(bodyBase64),
                     Redelivered = redelivered,
                     MessageId = messageId,
-                    Queue = queue
+                    Queue = queue,
+                    Offset = frame.Payload.Value.TryGetProperty("offset", out var offsetEl) &&
+                             offsetEl.ValueKind != System.Text.Json.JsonValueKind.Null
+                             ? offsetEl.GetInt64() : null
                 };
 
                 if (_deliveryChannels.TryGetValue(queue, out var channel))

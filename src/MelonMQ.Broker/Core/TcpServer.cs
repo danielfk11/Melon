@@ -19,6 +19,7 @@ public class TcpServer
     private readonly ILogger<TcpServer> _logger;
     private readonly MelonMQConfiguration _config;
     private readonly ClusterCoordinator? _clusterCoordinator;
+    private readonly ExchangeManager _exchangeManager;
     private readonly X509Certificate2? _serverCertificate;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancellationTokenSource;
@@ -34,7 +35,8 @@ public class TcpServer
         MelonMQConfiguration config,
         ILogger<TcpServer> logger,
         MelonMetrics metrics,
-        ClusterCoordinator? clusterCoordinator = null)
+        ClusterCoordinator? clusterCoordinator = null,
+        ExchangeManager? exchangeManager = null)
     {
         _queueManager = queueManager;
         _connectionManager = connectionManager;
@@ -42,6 +44,8 @@ public class TcpServer
         _logger = logger;
         _metrics = metrics;
         _clusterCoordinator = clusterCoordinator;
+        _exchangeManager = exchangeManager ?? new ExchangeManager(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ExchangeManager>.Instance);
 
         if (_config.TcpTls.Enabled)
         {
@@ -378,7 +382,7 @@ public class TcpServer
                     break;
                 
                 case MessageType.Publish:
-                    await HandlePublish(connection, frame);
+                    await HandlePublish(connection, frame, cancellationToken);
                     break;
                 
                 case MessageType.ConsumeSubscribe:
@@ -395,6 +399,22 @@ public class TcpServer
                 
                 case MessageType.SetPrefetch:
                     await HandleSetPrefetch(connection, frame);
+                    break;
+
+                case MessageType.DeclareExchange:
+                    await HandleDeclareExchange(connection, frame);
+                    break;
+
+                case MessageType.BindQueue:
+                    await HandleBindQueue(connection, frame);
+                    break;
+
+                case MessageType.UnbindQueue:
+                    await HandleUnbindQueue(connection, frame);
+                    break;
+
+                case MessageType.StreamAck:
+                    await HandleStreamAck(connection, frame);
                     break;
                 
                 default:
@@ -487,6 +507,25 @@ public class TcpServer
         
         try
         {
+            // Stream queue mode
+            if (string.Equals(payload.Mode, StreamQueue.StreamMode, StringComparison.OrdinalIgnoreCase))
+            {
+                _queueManager.DeclareStreamQueue(
+                    payload.Queue,
+                    payload.Durable,
+                    payload.StreamMaxLengthMessages ?? 100_000,
+                    payload.StreamMaxAgeMs);
+
+                var streamResponse = new Frame
+                {
+                    Type = MessageType.DeclareQueue,
+                    CorrelationId = frame.CorrelationId,
+                    Payload = new { success = true, queue = payload.Queue, mode = "stream" }
+                };
+                await WriteFrameAsync(connection, streamResponse);
+                return;
+            }
+
             var alreadyExisted = _queueManager.GetQueue(payload.Queue) != null;
             var queue = _queueManager.DeclareQueue(
                 payload.Queue, 
@@ -529,48 +568,99 @@ public class TcpServer
         }
     }
 
-    private async Task HandlePublish(ClientConnection connection, Frame frame)
+    private async Task HandlePublish(ClientConnection connection, Frame frame, CancellationToken cancellationToken = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var payload = (PublishPayload)frame.Payload!;
-        
-        if (string.IsNullOrWhiteSpace(payload.Queue) || string.IsNullOrWhiteSpace(payload.BodyBase64))
+
+        // Validation: need either exchange or queue, plus body
+        var hasExchange = !string.IsNullOrWhiteSpace(payload.Exchange);
+        var hasQueue = !string.IsNullOrWhiteSpace(payload.Queue);
+
+        if (!hasExchange && !hasQueue)
         {
-            await SendError(connection, frame.CorrelationId, "Publish payload must include both queue and bodyBase64");
+            await SendError(connection, frame.CorrelationId, "Publish payload must include either 'exchange' or 'queue'");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.BodyBase64))
+        {
+            await SendError(connection, frame.CorrelationId, "Publish payload must include 'bodyBase64'");
             return;
         }
 
         byte[] bodyBytes;
-        try
-        {
-            bodyBytes = Convert.FromBase64String(payload.BodyBase64);
-        }
+        try { bodyBytes = Convert.FromBase64String(payload.BodyBase64); }
         catch (FormatException)
         {
-            await SendError(connection, frame.CorrelationId, "Invalid Base64 payload in bodyBase64");
+            await SendError(connection, frame.CorrelationId, "Invalid Base64 in bodyBase64");
             return;
         }
-        
-        // Enforce max message size
+
         if (bodyBytes.Length > _config.MaxMessageSize)
         {
-            await SendError(connection, frame.CorrelationId, 
+            await SendError(connection, frame.CorrelationId,
                 $"Message size ({bodyBytes.Length} bytes) exceeds maximum allowed ({_config.MaxMessageSize} bytes)");
             return;
         }
-        
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var messageId = payload.MessageId == Guid.Empty ? Guid.NewGuid() : payload.MessageId;
+
+        // ── Exchange routing ───────────────────────────────────────────────
+        if (hasExchange)
+        {
+            var targetQueueNames = _exchangeManager.ResolveQueues(
+                payload.Exchange!,
+                payload.RoutingKey ?? string.Empty);
+
+            if (targetQueueNames.Count == 0)
+            {
+                // Unroutable — silently drop (same as RabbitMQ default exchange behaviour)
+                sw.Stop();
+                await SendPublishSuccess(connection, frame.CorrelationId, messageId);
+                return;
+            }
+
+            foreach (var queueName in targetQueueNames)
+            {
+                await PublishToQueueByName(
+                    queueName, bodyBytes, messageId, now, payload.TtlMs, payload.Persistent, cancellationToken);
+            }
+
+            sw.Stop();
+            _metrics.RecordMessagePublished(
+                payload.Exchange!, sw.Elapsed, bodyBytes.Length, source: "tcp",
+                replicated: _clusterCoordinator?.Enabled == true);
+            await SendPublishSuccess(connection, frame.CorrelationId, messageId);
+            return;
+        }
+
+        // ── Direct publish ─────────────────────────────────────────────────
+
+        // Stream queue path
+        var streamQueue = _queueManager.GetStreamQueue(payload.Queue);
+        if (streamQueue != null)
+        {
+            long? expiresAt = payload.TtlMs.HasValue ? now + payload.TtlMs.Value : null;
+            await streamQueue.AppendAsync(bodyBytes, messageId, expiresAt);
+            sw.Stop();
+            _metrics.RecordMessagePublished(
+                payload.Queue, sw.Elapsed, bodyBytes.Length, source: "tcp",
+                replicated: false);
+            await SendPublishSuccess(connection, frame.CorrelationId, messageId);
+            return;
+        }
+
+        // Classic queue path
         var queue = _queueManager.GetQueue(payload.Queue);
-        
         if (queue == null)
         {
             _logger.LogDebug("Auto-creating queue '{QueueName}' for publish operation", payload.Queue);
             queue = _queueManager.DeclareQueue(payload.Queue, durable: false);
         }
 
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var effectiveTtlMs = payload.TtlMs ?? queue.DefaultTtlMs;
-        var messageId = payload.MessageId == Guid.Empty ? Guid.NewGuid() : payload.MessageId;
-        
         var message = new QueueMessage
         {
             MessageId = messageId,
@@ -582,7 +672,23 @@ public class TcpServer
             DeliveryCount = 0
         };
 
-        await queue.EnqueueAsync(message);
+        await queue.EnqueueAsync(message, cancellationToken);
+
+        // Fan-out to consumer group queues
+        foreach (var groupQueue in _queueManager.GetGroupQueues(payload.Queue))
+        {
+            var groupMessage = new QueueMessage
+            {
+                MessageId = Guid.NewGuid(), // distinct ID per group copy
+                Body = message.Body,
+                EnqueuedAt = message.EnqueuedAt,
+                ExpiresAt = message.ExpiresAt,
+                Persistent = message.Persistent,
+                Redelivered = false,
+                DeliveryCount = 0
+            };
+            await groupQueue.EnqueueAsync(groupMessage, cancellationToken);
+        }
 
         if (_clusterCoordinator?.Enabled == true)
         {
@@ -590,31 +696,85 @@ public class TcpServer
             if (!replicated)
             {
                 await queue.AckByMessageIdAsync(message.MessageId);
-                await SendError(
-                    connection,
-                    frame.CorrelationId,
+                await SendError(connection, frame.CorrelationId,
                     "Publish failed to meet cluster consistency policy.");
                 return;
             }
         }
 
         sw.Stop();
-        _metrics.RecordMessagePublished(payload.Queue, sw.Elapsed, bodyBytes.Length, source: "tcp", replicated: _clusterCoordinator?.Enabled == true);
+        _metrics.RecordMessagePublished(
+            payload.Queue, sw.Elapsed, bodyBytes.Length, source: "tcp",
+            replicated: _clusterCoordinator?.Enabled == true);
 
+        await SendPublishSuccess(connection, frame.CorrelationId, messageId);
+    }
+
+    private async Task PublishToQueueByName(
+        string queueName,
+        byte[] bodyBytes,
+        Guid messageId,
+        long now,
+        int? ttlMs,
+        bool persistent,
+        CancellationToken cancellationToken = default)
+    {
+        var streamQueue = _queueManager.GetStreamQueue(queueName);
+        if (streamQueue != null)
+        {
+            long? expiresAt = ttlMs.HasValue ? now + ttlMs.Value : null;
+            await streamQueue.AppendAsync(bodyBytes, Guid.NewGuid(), expiresAt);
+            return;
+        }
+
+        var queue = _queueManager.GetQueue(queueName);
+        if (queue == null)
+        {
+            _logger.LogDebug("Auto-creating queue '{QueueName}' for exchange routing", queueName);
+            queue = _queueManager.DeclareQueue(queueName, durable: false);
+        }
+
+        var effectiveTtlMs = ttlMs ?? queue.DefaultTtlMs;
+        var message = new QueueMessage
+        {
+            MessageId = Guid.NewGuid(),
+            Body = bodyBytes,
+            EnqueuedAt = now,
+            ExpiresAt = effectiveTtlMs.HasValue ? now + effectiveTtlMs.Value : null,
+            Persistent = persistent,
+            Redelivered = false,
+            DeliveryCount = 0
+        };
+
+        await queue.EnqueueAsync(message, cancellationToken);
+
+        foreach (var groupQueue in _queueManager.GetGroupQueues(queueName))
+        {
+            await groupQueue.EnqueueAsync(new QueueMessage
+            {
+                MessageId = Guid.NewGuid(),
+                Body = message.Body,
+                EnqueuedAt = message.EnqueuedAt,
+                ExpiresAt = message.ExpiresAt,
+                Persistent = message.Persistent
+            }, cancellationToken);
+        }
+    }
+
+    private async Task SendPublishSuccess(ClientConnection connection, ulong correlationId, Guid messageId)
+    {
         try
         {
-            var response = new Frame
+            await WriteFrameAsync(connection, new Frame
             {
                 Type = MessageType.Publish,
-                CorrelationId = frame.CorrelationId,
+                CorrelationId = correlationId,
                 Payload = new { success = true, messageId }
-            };
-            
-            await WriteFrameAsync(connection, response);
+            });
         }
         catch (InvalidOperationException)
         {
-            _logger.LogDebug("Could not send publish response to connection {ConnectionId} - connection already closed", connection.Id);
+            _logger.LogDebug("Could not send publish response to connection {Id} - already closed", connection.Id);
         }
     }
 
@@ -628,47 +788,81 @@ public class TcpServer
         }
 
         var payload = (ConsumeSubscribePayload)frame.Payload!;
-        var queue = _queueManager.GetQueue(payload.Queue);
-        
-        if (queue == null)
+
+        // ── Stream queue path ─────────────────────────────────────────────
+        var streamQueue = _queueManager.GetStreamQueue(payload.Queue);
+        if (streamQueue != null)
         {
-            await SendError(connection, frame.CorrelationId, $"Queue '{payload.Queue}' does not exist");
+            await HandleStreamConsumeSubscribe(connection, frame, payload, streamQueue, cancellationToken);
             return;
         }
 
-        // Cancel and await existing consumer for this queue if any
-        if (connection.ActiveConsumers.TryRemove(payload.Queue, out var existing))
+        // ── Classic queue path ────────────────────────────────────────────
+
+        // Determine actual queue: group queue or source queue directly
+        string actualQueueName;
+        if (!string.IsNullOrEmpty(payload.Group))
+        {
+            var sourceQueue = _queueManager.GetQueue(payload.Queue);
+            if (sourceQueue == null)
+            {
+                await SendError(connection, frame.CorrelationId, $"Queue '{payload.Queue}' does not exist");
+                return;
+            }
+            var groupQueue = _queueManager.DeclareGroupQueue(payload.Queue, payload.Group, sourceQueue.IsDurable);
+            actualQueueName = groupQueue.Name;
+        }
+        else
+        {
+            var q = _queueManager.GetQueue(payload.Queue);
+            if (q == null)
+            {
+                await SendError(connection, frame.CorrelationId, $"Queue '{payload.Queue}' does not exist");
+                return;
+            }
+            actualQueueName = payload.Queue;
+        }
+
+        var actualQueue = _queueManager.GetQueue(actualQueueName)!;
+
+        // Consumer key includes group so two groups on the same queue+connection
+        // can coexist without canceling each other.
+        var consumerKey = !string.IsNullOrEmpty(payload.Group)
+            ? $"{payload.Queue}::grp:{payload.Group}"
+            : payload.Queue;
+
+        // Cancel and await existing consumer for this consumer key if any
+        if (connection.ActiveConsumers.TryRemove(consumerKey, out var existing))
         {
             try { existing.Cts.Cancel(); } catch { }
             try { await existing.Task.ConfigureAwait(false); } catch { }
         }
 
         // Immediately recover any in-flight messages for this queue that belong to
-        // dead connections. Without this, those messages would stay stuck for up to
-        // 5 minutes waiting for the GC expiry, invisible to this new consumer.
+        // dead connections.
         var activeConnectionIds = _connectionManager
             .GetAllConnections()
             .Select(c => c.Id)
             .ToHashSet();
-        await queue.RequeuePendingMessagesForDeadConnections(activeConnectionIds);
+        await actualQueue.RequeuePendingMessagesForDeadConnections(activeConnectionIds);
 
         var consumerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        // Start consuming with prefetch control
-        var inFlightKey = $"{connection.Id}:{payload.Queue}";
+        var inFlightKey = $"{connection.Id}:{actualQueueName}";
         _connectionInFlightCount.TryAdd(inFlightKey, 0);
 
-        // Send the success response BEFORE starting the consumer task.
-        // If Task.Run starts immediately and wins the WriteLock, it would flood
-        // DELIVER frames and block this response indefinitely, causing the client
-        // to time out waiting for the CONSUMESUBSCRIBE ack.
-        var response = new Frame
+        // The "logical delivery queue" is what the client uses to route incoming
+        // Deliver frames to the correct delivery channel.  When a group is active
+        // we include it so two groups on the same source queue get separate channels.
+        var logicalDeliveryQueue = consumerKey;
+
+        // Send success BEFORE starting the consumer task.
+        await WriteFrameAsync(connection, new Frame
         {
             Type = MessageType.ConsumeSubscribe,
             CorrelationId = frame.CorrelationId,
-            Payload = new { success = true, queue = payload.Queue }
-        };
-        await WriteFrameAsync(connection, response);
+            Payload = new { success = true, queue = logicalDeliveryQueue }
+        });
 
         var consumerTask = Task.Run(async () =>
         {
@@ -676,63 +870,121 @@ public class TcpServer
             {
                 while (!consumerCts.Token.IsCancellationRequested)
                 {
-                    // Enforce prefetch limit — wait for slot instead of busy-polling
                     var currentInFlight = _connectionInFlightCount.GetValueOrDefault(inFlightKey, 0);
                     if (currentInFlight >= connection.Prefetch)
                     {
-                        // Wait for a slot to become available (signaled by Ack/Nack)
-                        try
-                        {
-                            await connection.PrefetchSlotAvailable.WaitAsync(consumerCts.Token);
-                        }
+                        try { await connection.PrefetchSlotAvailable.WaitAsync(consumerCts.Token); }
                         catch (OperationCanceledException) { break; }
                         catch (ObjectDisposedException) { break; }
                         continue;
                     }
 
-                    var result = await queue.DequeueAsync(connection.Id, consumerCts.Token);
+                    var result = await actualQueue.DequeueAsync(connection.Id, consumerCts.Token);
                     if (result == null) continue;
 
                     var (message, queueDeliveryTag) = result.Value;
                     var clientDeliveryTag = connection.NextClientDeliveryTag();
-                    
-                    // Map client-facing tag to connection + queue name + queue's internal tag
-                    _deliveryTagMap[clientDeliveryTag] = (connection.Id, payload.Queue, queueDeliveryTag);
 
-                    var deliverPayload = new DeliverPayload
-                    {
-                        Queue = payload.Queue,
-                        DeliveryTag = clientDeliveryTag,
-                        BodyBase64 = Convert.ToBase64String(message.Body.Span),
-                        Redelivered = message.Redelivered,
-                        MessageId = message.MessageId
-                    };
+                    _deliveryTagMap[clientDeliveryTag] = (connection.Id, actualQueueName, queueDeliveryTag);
 
-                    var deliverFrame = new Frame
+                    await WriteFrameAsync(connection, new Frame
                     {
                         Type = MessageType.Deliver,
                         CorrelationId = 0,
-                        Payload = deliverPayload
-                    };
+                        Payload = new DeliverPayload
+                        {
+                            Queue = logicalDeliveryQueue,
+                            DeliveryTag = clientDeliveryTag,
+                            BodyBase64 = Convert.ToBase64String(message.Body.Span),
+                            Redelivered = message.Redelivered,
+                            MessageId = message.MessageId
+                        }
+                    });
 
-                    await WriteFrameAsync(connection, deliverFrame);
                     _connectionInFlightCount.AddOrUpdate(inFlightKey, 1, (_, v) => v + 1);
                     _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero, message.Redelivered, source: "tcp");
                 }
             }
-            catch (OperationCanceledException)
-            {
-                // Consumer was cancelled
-            }
+            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in consumer for queue {Queue} on connection {ConnectionId}", 
+                _logger.LogError(ex, "Error in consumer for queue {Queue} on connection {ConnectionId}",
                     payload.Queue, connection.Id);
                 _metrics.RecordError("consume", ex.GetType().Name);
             }
             finally
             {
                 _connectionInFlightCount.TryRemove(inFlightKey, out _);
+            }
+        });
+
+        connection.ActiveConsumers[consumerKey] = (consumerCts, consumerTask);
+    }
+
+    private async Task HandleStreamConsumeSubscribe(
+        ClientConnection connection,
+        Frame frame,
+        ConsumeSubscribePayload payload,
+        StreamQueue streamQueue,
+        CancellationToken cancellationToken)
+    {
+        // Consumer identity: group members share offset; solo consumers track by connection
+        var consumerId = !string.IsNullOrEmpty(payload.Group)
+            ? $"group:{payload.Group}"
+            : $"conn:{connection.Id}";
+
+        var startOffset = streamQueue.ResolveStartOffset(consumerId, payload.Offset ?? -1);
+
+        // Cancel existing consumer for this queue
+        if (connection.ActiveConsumers.TryRemove(payload.Queue, out var existing))
+        {
+            try { existing.Cts.Cancel(); } catch { }
+            try { await existing.Task.ConfigureAwait(false); } catch { }
+        }
+
+        var consumerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        await WriteFrameAsync(connection, new Frame
+        {
+            Type = MessageType.ConsumeSubscribe,
+            CorrelationId = frame.CorrelationId,
+            Payload = new { success = true, queue = payload.Queue, offset = startOffset, mode = "stream" }
+        });
+
+        var consumerTask = Task.Run(async () =>
+        {
+            var currentOffset = startOffset;
+            try
+            {
+                while (!consumerCts.Token.IsCancellationRequested)
+                {
+                    var entry = await streamQueue.ReadAtAsync(currentOffset, consumerCts.Token);
+                    if (entry == null) break;
+
+                    await WriteFrameAsync(connection, new Frame
+                    {
+                        Type = MessageType.Deliver,
+                        CorrelationId = 0,
+                        Payload = new DeliverPayload
+                        {
+                            Queue = payload.Queue,
+                            DeliveryTag = 0,
+                            BodyBase64 = Convert.ToBase64String(entry.Body.Span),
+                            Redelivered = false,
+                            MessageId = entry.MessageId,
+                            Offset = entry.Offset
+                        }
+                    });
+
+                    currentOffset = entry.Offset + 1;
+                    _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero, false, source: "tcp-stream");
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in stream consumer for queue {Queue} on connection {ConnectionId}",
+                    payload.Queue, connection.Id);
             }
         });
 
@@ -846,12 +1098,100 @@ public class TcpServer
         await WriteFrameAsync(connection, response);
     }
 
+    private async Task HandleDeclareExchange(ClientConnection connection, Frame frame)
+    {
+        var payload = (DeclareExchangePayload)frame.Payload!;
+
+        if (!Enum.TryParse<ExchangeType>(payload.Type, ignoreCase: true, out var exchangeType))
+        {
+            await SendError(connection, frame.CorrelationId,
+                $"Unknown exchange type '{payload.Type}'. Valid types: direct, fanout, topic.");
+            return;
+        }
+
+        try
+        {
+            _exchangeManager.DeclareExchange(payload.Exchange, exchangeType, payload.Durable);
+            await WriteFrameAsync(connection, new Frame
+            {
+                Type = MessageType.DeclareExchange,
+                CorrelationId = frame.CorrelationId,
+                Payload = new { success = true, exchange = payload.Exchange, type = payload.Type }
+            });
+        }
+        catch (ArgumentException ex)
+        {
+            await SendError(connection, frame.CorrelationId, ex.Message);
+        }
+    }
+
+    private async Task HandleBindQueue(ClientConnection connection, Frame frame)
+    {
+        var payload = (BindQueuePayload)frame.Payload!;
+
+        try
+        {
+            _exchangeManager.BindQueue(payload.Exchange, payload.Queue, payload.RoutingKey);
+            await WriteFrameAsync(connection, new Frame
+            {
+                Type = MessageType.BindQueue,
+                CorrelationId = frame.CorrelationId,
+                Payload = new { success = true, exchange = payload.Exchange, queue = payload.Queue, routingKey = payload.RoutingKey }
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            await SendError(connection, frame.CorrelationId, ex.Message);
+        }
+    }
+
+    private async Task HandleUnbindQueue(ClientConnection connection, Frame frame)
+    {
+        var payload = (UnbindQueuePayload)frame.Payload!;
+
+        _exchangeManager.UnbindQueue(payload.Exchange, payload.Queue, payload.RoutingKey);
+        await WriteFrameAsync(connection, new Frame
+        {
+            Type = MessageType.UnbindQueue,
+            CorrelationId = frame.CorrelationId,
+            Payload = new { success = true }
+        });
+    }
+
+    private async Task HandleStreamAck(ClientConnection connection, Frame frame)
+    {
+        var payload = (StreamAckPayload)frame.Payload!;
+
+        var streamQueue = _queueManager.GetStreamQueue(payload.Queue);
+        if (streamQueue == null)
+        {
+            await SendError(connection, frame.CorrelationId, $"Stream queue '{payload.Queue}' does not exist.");
+            return;
+        }
+
+        var consumerId = !string.IsNullOrEmpty(payload.Group)
+            ? $"group:{payload.Group}"
+            : $"conn:{connection.Id}";
+
+        streamQueue.CommitOffset(consumerId, payload.Offset);
+
+        await WriteFrameAsync(connection, new Frame
+        {
+            Type = MessageType.StreamAck,
+            CorrelationId = frame.CorrelationId,
+            Payload = new { success = true, offset = payload.Offset }
+        });
+    }
+
     private static bool IsWriteFrameType(MessageType messageType)
     {
         return messageType is MessageType.DeclareQueue
             or MessageType.Publish
             or MessageType.Ack
-            or MessageType.Nack;
+            or MessageType.Nack
+            or MessageType.DeclareExchange
+            or MessageType.BindQueue
+            or MessageType.UnbindQueue;
     }
 
     private async Task HandleSetPrefetch(ClientConnection connection, Frame frame)
