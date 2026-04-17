@@ -1,48 +1,63 @@
 # MelonMQ
 
-Message broker leve escrito em C# com protocolo TCP binário e API HTTP.
+Message broker leve em C# com protocolo TCP binario (framing + JSON) e API HTTP para operacao/admin.
 
-## Funcionalidades
+## Estado atual do projeto
 
-- Protocolo TCP com framing binário (length-prefixed JSON)
-- API HTTP REST para publicação, consumo e gerenciamento
-- Persistência em disco com compactação automática de logs
-- Acknowledge/Nack com reentrega automática
-- Dead Letter Queues
-- TTL de mensagens
-- Garbage collector de filas inativas
-- Prefetch configurável por consumidor
-- Heartbeat e detecção de conexões mortas
-- Recuperação automática de mensagens in-flight de conexões encerradas
-- Métricas Prometheus e OpenTelemetry (OTLP)
-- Clustering com eleição de líder e replicação
-- Interface web de administração embutida
+- Filas classicas com ACK/NACK, DLQ, TTL, prefetch e redelivery.
+- Exchanges (direct, fanout, topic) via TCP.
+- Stream queues com replay por offset e consumer groups.
+- Persistencia em disco para filas classicas e stream entries.
+- Cluster com replicacao entre nos e modo de consistencia leader/quorum.
+- Observabilidade com Prometheus e OpenTelemetry (OTLP).
+- Interface web de administracao embutida (wwwroot).
+- Semantica de entrega: at-least-once.
 
-## Início rápido
+## Inicio rapido
 
 ```bash
 git clone https://github.com/danielfk11/MelonMQ.git
 cd MelonMQ
-dotnet build
-cd src/MelonMQ.Broker
-dotnet run
+dotnet build MelonMQ.sln
+dotnet run --project src/MelonMQ.Broker
 ```
 
-O broker sobe na porta TCP `5672` e HTTP `9090`.
+Endpoints iniciais:
 
 ```bash
 curl http://localhost:9090/health
 curl http://localhost:9090/stats
+curl http://localhost:9090/queues
 ```
 
-A interface web de administração fica disponível em `http://localhost:9090`.
+UI de administracao:
 
-## Configuração
+- http://localhost:9090
 
-Edite o `appsettings.json` na raiz do broker:
+## Portas e bind (importante)
+
+- TCP do broker usa MelonMQ:TcpBindAddress + MelonMQ:TcpPort.
+- HTTP da API/UI roda em http://localhost:{MelonMQ:HttpPort} no bootstrap atual.
+
+Exemplo padrao:
+
+- TCP: 127.0.0.1:5672
+- HTTP: localhost:9090
+
+## Configuracao exata
+
+Arquivo base: src/MelonMQ.Broker/appsettings.json
 
 ```json
 {
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.Extensions.Hosting": "Information"
+    }
+  },
+  "AllowedHosts": "*",
   "MelonMQ": {
     "TcpPort": 5672,
     "TcpBindAddress": "127.0.0.1",
@@ -50,30 +65,46 @@ Edite o `appsettings.json` na raiz do broker:
     "DataDirectory": "data",
     "BatchFlushMs": 10,
     "CompactionThresholdMB": 100,
-    "ChannelCapacity": 10000,
+    "EnableAuth": false,
     "ConnectionTimeout": 30000,
     "HeartbeatInterval": 10000,
     "MaxConnections": 1000,
     "MaxMessageSize": 1048576,
+    "TcpTls": {
+      "Enabled": false,
+      "CertificatePath": "",
+      "CertificatePassword": "",
+      "ClientCertificateRequired": false,
+      "CheckCertificateRevocation": false
+    },
     "Security": {
-      "RequireAuth": false,
       "JwtSecret": "",
       "JwtExpirationMinutes": 60,
-      "AllowedOrigins": [],
+      "RequireAuth": false,
+      "RequireHashedPasswords": true,
+      "RequireAdminApiKey": false,
+      "ProtectReadEndpoints": true,
+      "AllowedOrigins": ["http://localhost:3000", "http://localhost:9090"],
       "AdminApiKey": "",
       "Users": {}
     },
     "Observability": {
+      "ServiceName": "MelonMQ.Broker",
+      "ServiceVersion": "1.0.0",
       "Prometheus": {
         "Enabled": true,
-        "EndpointPath": "/metrics"
+        "EndpointPath": "/metrics",
+        "RequireAdminApiKey": false
       },
       "Otlp": {
         "Enabled": false,
-        "Endpoint": "http://localhost:4318",
+        "Endpoint": "",
         "Protocol": "http/protobuf",
+        "Headers": "",
         "EnableMetrics": true,
-        "EnableTraces": true
+        "EnableTraces": true,
+        "MetricsExportIntervalMs": 5000,
+        "TimeoutMs": 10000
       }
     },
     "Cluster": {
@@ -82,6 +113,10 @@ Edite o `appsettings.json` na raiz do broker:
       "NodeAddress": "http://127.0.0.1:9090",
       "SeedNodes": [],
       "SharedKey": "",
+      "DiscoveryIntervalSeconds": 5,
+      "NodeTimeoutSeconds": 15,
+      "EnableReplication": true,
+      "RequireQuorumForWrites": true,
       "Consistency": "leader"
     },
     "QueueGC": {
@@ -95,203 +130,437 @@ Edite o `appsettings.json` na raiz do broker:
 }
 ```
 
-### Queue Garbage Collector
+### O que cada chave faz
 
-Remove automaticamente filas vazias e inativas para evitar acúmulo de filas órfãs. Também drena mensagens expiradas que ainda estão pendentes no canal de cada fila.
+#### MelonMQ (core)
 
-| Parâmetro | Default | Descrição |
-|-----------|---------|-----------|
-| `Enabled` | `true` | Ativa/desativa o GC |
-| `IntervalSeconds` | `60` | Intervalo entre execuções |
-| `InactiveThresholdSeconds` | `300` | Tempo ocioso antes da remoção |
-| `OnlyNonDurable` | `true` | Se `true`, só remove filas não-duráveis |
-| `MaxQueues` | `1000` | Limite de filas (0 = sem limite) |
+| Chave | Default | O que faz |
+|---|---:|---|
+| TcpPort | 5672 | Porta TCP do protocolo MelonMQ |
+| TcpBindAddress | 127.0.0.1 | Endereco de bind TCP (IP ou localhost) |
+| HttpPort | 9090 | Porta HTTP da API/UI |
+| DataDirectory | data | Pasta de persistencia (logs de fila e streams) |
+| BatchFlushMs | 10 | Janela de batch de persistencia para append em disco |
+| CompactionThresholdMB | 100 | Tamanho para disparar compactacao de log |
+| EnableAuth | false | Legado/no-op no runtime atual |
+| ConnectionTimeout | 30000 | Timeout de conexao inativa (ms) |
+| HeartbeatInterval | 10000 | Intervalo de heartbeat esperado (ms) |
+| MaxConnections | 1000 | Limite maximo de conexoes TCP |
+| MaxMessageSize | 1048576 | Tamanho maximo de payload (bytes) |
 
-### Segurança HTTP
+#### MelonMQ:TcpTls
 
-Se `MelonMQ:Security:AdminApiKey` estiver configurado, endpoints HTTP de escrita/administrativos exigem o header `X-Api-Key`.
+| Chave | Default | O que faz |
+|---|---:|---|
+| Enabled | false | Liga TLS no listener TCP |
+| CertificatePath | vazio | Caminho do certificado .pfx |
+| CertificatePassword | vazio | Senha do .pfx |
+| ClientCertificateRequired | false | Exige certificado de cliente |
+| CheckCertificateRevocation | false | Revocation check de certificados |
 
-Exemplo:
+#### MelonMQ:Security
 
-```bash
-curl -X POST http://localhost:9090/queues/declare \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: <sua-chave>" \
-  -d '{"name":"minha-fila","durable":true}'
-```
+| Chave | Default | O que faz |
+|---|---:|---|
+| RequireAuth | false | Exige frame AUTH no TCP antes de operacoes |
+| RequireHashedPasswords | true | Forca credenciais em formato hash PBKDF2 |
+| Users | {} | Mapa usuario -> senha/hash para AUTH TCP |
+| RequireAdminApiKey | false | Protege endpoints HTTP administrativos/escrita |
+| ProtectReadEndpoints | true | Se true, endpoints HTTP de leitura tambem exigem X-Api-Key quando RequireAdminApiKey=true |
+| AdminApiKey | vazio | Valor esperado em X-Api-Key |
+| AllowedOrigins | localhosts | CORS para API/UI |
+| JwtSecret / JwtExpirationMinutes | vazio / 60 | Presente no config, sem fluxo JWT ativo no runtime atual |
 
-## Protocolo TCP
+Formato de hash suportado para Users quando RequireHashedPasswords=true:
 
-O protocolo usa framing com prefixo de 4 bytes em little-endian seguido de JSON UTF-8:
+pbkdf2-sha256$iterations$saltBase64$hashBase64
 
-```
-[ 4 bytes LE uint32 = tamanho do JSON ][ JSON em UTF-8 ]
-```
+#### MelonMQ:Observability
 
-Cada frame tem o formato:
+| Chave | Default | O que faz |
+|---|---:|---|
+| ServiceName | MelonMQ.Broker | Nome do recurso OTEL |
+| ServiceVersion | 1.0.0 | Versao do recurso OTEL |
+| Prometheus.Enabled | true | Exponibiliza endpoint de metricas |
+| Prometheus.EndpointPath | /metrics | Rota Prometheus |
+| Prometheus.RequireAdminApiKey | false | Exige X-Api-Key no endpoint de metricas |
+| Otlp.Enabled | false | Liga exportacao OTLP |
+| Otlp.Endpoint | vazio | Endpoint OTLP base |
+| Otlp.Protocol | http/protobuf | Protocolo OTLP (http/protobuf ou grpc) |
+| Otlp.Headers | vazio | Headers adicionais OTLP |
+| Otlp.EnableMetrics | true | Exporta metricas OTLP |
+| Otlp.EnableTraces | true | Exporta traces OTLP |
+| Otlp.MetricsExportIntervalMs | 5000 | Intervalo de exportacao de metricas |
+| Otlp.TimeoutMs | 10000 | Timeout de exportacao OTLP |
+
+#### MelonMQ:Cluster
+
+| Chave | Default | O que faz |
+|---|---:|---|
+| Enabled | false | Liga modo cluster |
+| NodeId | node-local | Identificador do no |
+| NodeAddress | http://127.0.0.1:9090 | Endereco HTTP do no |
+| SeedNodes | [] | Lista inicial de discovery |
+| SharedKey | vazio | Chave para autenticacao entre nos (header X-Cluster-Key) |
+| DiscoveryIntervalSeconds | 5 | Intervalo de ping/discovery |
+| NodeTimeoutSeconds | 15 | Timeout para considerar no inativo |
+| EnableReplication | true | Liga replicacao de operacoes |
+| RequireQuorumForWrites | true | Bloqueia escrita sem quorum |
+| Consistency | leader | Politica: leader ou quorum |
+
+#### MelonMQ:QueueGC
+
+| Chave | Default | O que faz |
+|---|---:|---|
+| Enabled | true | Liga coleta de filas inativas |
+| IntervalSeconds | 60 | Periodicidade do GC |
+| InactiveThresholdSeconds | 300 | Ociosidade minima para remover fila vazia |
+| OnlyNonDurable | true | Se true, so remove fila nao-duravel |
+| MaxQueues | 1000 | Limite de filas classicas (0 = sem limite) |
+
+### Regras de validacao aplicadas no bootstrap
+
+- TcpBindAddress deve ser IP valido ou localhost.
+- TcpPort e HttpPort devem estar entre 1 e 65535.
+- MaxMessageSize deve ser >= 1024 bytes.
+- MaxConnections deve ser >= 1.
+- QueueGC.IntervalSeconds e QueueGC.InactiveThresholdSeconds devem ser >= 1.
+- QueueGC.MaxQueues deve ser >= 0.
+- Prometheus.EndpointPath deve iniciar com /.
+- OTLP habilitado exige Endpoint absoluto http/https, MetricsExportIntervalMs >= 500 e TimeoutMs >= 1000.
+- Cluster habilitado exige NodeId/NodeAddress validos, SeedNodes validos, DiscoveryIntervalSeconds >= 1, NodeTimeoutSeconds >= 2 e NodeTimeoutSeconds > DiscoveryIntervalSeconds.
+- Cluster.Consistency aceita somente leader ou quorum.
+
+### Requisitos obrigatorios de producao/staging
+
+Quando o ambiente e Production ou Staging:
+
+- Security.RequireAuth deve ser true.
+- TcpTls.Enabled deve ser true.
+- Security.RequireAdminApiKey deve ser true.
+- Security.AllowedOrigins nao pode estar vazio.
+- Se Cluster.Enabled=true, Cluster.SharedKey e obrigatorio.
+
+Arquivo de referencia: src/MelonMQ.Broker/appsettings.Production.json
+
+## API HTTP (contrato exato)
+
+### Modelo de autenticacao HTTP
+
+- Endpoints de escrita/admin usam ValidateAdminApiKey(context).
+- Endpoints de leitura usam ValidateAdminApiKey(context, readOnlyEndpoint: true).
+- Se Security.RequireAdminApiKey=false, API fica aberta.
+- Se Security.RequireAdminApiKey=true e Security.ProtectReadEndpoints=false, apenas escrita/admin exige X-Api-Key.
+- Se Observability.Prometheus.RequireAdminApiKey=true, /metrics exige X-Api-Key.
+
+### Endpoints publicos
+
+| Metodo | Endpoint | O que faz |
+|---|---|---|
+| GET | /health | Status do broker (inclui cluster) |
+| GET | /stats | Filas, conexoes, metricas, uptime |
+| GET | /metrics | Endpoint Prometheus (rota configuravel) |
+| GET | /queues | Lista filas classicas |
+| GET | /queues/inactive | Filas candidatas ao GC |
+| GET | /queues/gc/status | Config/status do GC |
+| GET | /cluster/status | Estado do cluster |
+| POST | /queues/declare | Declara fila classica |
+| POST | /queues/{queueName}/publish | Publica mensagem de texto na fila |
+| GET | /queues/{queueName}/consume | Consome 1 mensagem (long polling 5s, auto-ack) |
+| POST | /queues/{queueName}/purge | Remove backlog/in-flight da fila |
+| DELETE | /queues/{queueName} | Deleta fila |
+| POST | /queues/gc | Executa GC manual (somente fora de cluster) |
+
+Observacao:
+
+- Em cluster, operacoes de escrita e consume podem retornar 409 Conflict quando o no nao pode aceitar escrita (follower ou sem quorum, conforme configuracao).
+
+Endpoints internos de cluster (uso no-a-no):
+
+- POST /cluster/ping
+- POST /cluster/join
+- POST /cluster/leave
+- POST /cluster/replicate/declare
+- POST /cluster/replicate/publish
+- POST /cluster/replicate/ack
+- POST /cluster/replicate/purge
+- POST /cluster/replicate/delete
+
+### Payloads HTTP exatos
+
+Declarar fila:
 
 ```json
-{ "type": "PUBLISH", "corrId": 1, "payload": { ... } }
-```
-
-- `type`: tipo do comando
-- `corrId`: ID de correlação da requisição (inteiro crescente, começa em 1)
-- `payload`: objeto específico de cada comando
-- Frames de entrega (`DELIVER`) sempre chegam com `corrId: 0` e devem ser tratados separadamente
-- O corpo da mensagem é transmitido como `bodyBase64` (Base64 do payload em bytes)
-
-### Comandos
-
-| Tipo | Direção | Payload (requisição) | Payload (resposta) |
-|------|---------|---------------------|--------------------|
-| `AUTH` | C→S | `{ username, password }` | `{ success }` |
-| `DECLAREQUEUE` | C→S | `{ queue, durable?, deadLetterQueue?, defaultTtlMs? }` | `{ success, queue }` |
-| `PUBLISH` | C→S | `{ queue, bodyBase64, persistent?, ttlMs?, messageId?, headers? }` | `{ success, messageId }` |
-| `CONSUMESUBSCRIBE` | C→S | `{ queue }` | `{ success, queue }` |
-| `CONSUMEUNSUBSCRIBE` | C→S | `{ queue }` | `{ success }` |
-| `ACK` | C→S | `{ deliveryTag }` | `{ success }` |
-| `NACK` | C→S | `{ deliveryTag, requeue? }` | `{ success }` |
-| `SETPREFETCH` | C→S | `{ prefetch }` | `{ success }` |
-| `HEARTBEAT` | C↔S | `{}` | `{}` |
-| `DELIVER` | S→C | `{ queue, deliveryTag, bodyBase64, messageId, redelivered, headers }` | — |
-
-> **Atenção ao consumir:** registre o handler de `DELIVER` **antes** de enviar `CONSUMESUBSCRIBE`. O broker começa a entregar mensagens imediatamente após confirmar a assinatura.
-
-> **DeliveryTag:** inteiro de 64 bits. Linguagens com limite de precisão em inteiros (ex: JavaScript com `Number.MAX_SAFE_INTEGER`) devem tratar o valor como string ou `BigInt`.
-
-## Cliente .NET
-
-```bash
-dotnet add package MelonMQ.Client
-```
-
-### Produtor
-
-```csharp
-using MelonMQ.Client;
-
-using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
-using var channel = await connection.CreateChannelAsync();
-
-await channel.DeclareQueueAsync("minha-fila", durable: true);
-
-var body = System.Text.Encoding.UTF8.GetBytes("Hello MelonMQ");
-await channel.PublishAsync("minha-fila", body, persistent: true, ttlMs: 60000);
-```
-
-### Consumidor
-
-```csharp
-using MelonMQ.Client;
-
-using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
-using var channel = await connection.CreateChannelAsync();
-
-await channel.DeclareQueueAsync("minha-fila", durable: true);
-
-await foreach (var message in channel.ConsumeAsync("minha-fila", prefetch: 50))
 {
-    var body = System.Text.Encoding.UTF8.GetString(message.Body.Span);
-    Console.WriteLine(body);
-
-    await channel.AckAsync(message.DeliveryTag);
+  "name": "orders.created",
+  "durable": true,
+  "deadLetterQueue": "orders.created.dlq",
+  "defaultTtlMs": 300000
 }
 ```
 
-## API HTTP
+Publicar mensagem (HTTP usa string em message):
 
-Qualquer linguagem pode interagir com o broker via HTTP.
-
-### Endpoints
-
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| `GET` | `/health` | Status do broker |
-| `GET` | `/stats` | Estatísticas (filas, conexões, métricas, uptime) |
-| `GET` | `/metrics` | Endpoint Prometheus |
-| `GET` | `/queues` | Lista filas |
-| `POST` | `/queues/declare` | Cria uma fila |
-| `DELETE` | `/queues/{name}` | Deleta uma fila |
-| `POST` | `/queues/{name}/purge` | Limpa mensagens de uma fila |
-| `POST` | `/queues/{name}/publish` | Publica uma mensagem |
-| `GET` | `/queues/{name}/consume` | Consome uma mensagem (long polling, 5s) |
-| `GET` | `/queues/inactive` | Lista filas inativas |
-| `POST` | `/queues/gc` | Executa GC manualmente |
-| `GET` | `/queues/gc/status` | Status do GC |
-| `GET` | `/cluster/status` | Estado do cluster |
-
-### Exemplos com curl
-
-```bash
-# Criar fila
-curl -X POST http://localhost:9090/queues/declare \
-  -H "Content-Type: application/json" \
-  -d '{"name":"minha-fila","durable":true,"deadLetterQueue":"minha-fila.dlq","defaultTtlMs":300000}'
-
-# Publicar
-curl -X POST http://localhost:9090/queues/minha-fila/publish \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Hello MelonMQ","persistent":true,"ttlMs":300000}'
-
-# Consumir
-curl http://localhost:9090/queues/minha-fila/consume
-
-# Listar filas
-curl http://localhost:9090/queues
-
-# Deletar fila
-curl -X DELETE http://localhost:9090/queues/minha-fila
-
-# Forçar GC
-curl -X POST http://localhost:9090/queues/gc
+```json
+{
+  "message": "hello",
+  "persistent": true,
+  "ttlMs": 60000,
+  "messageId": "fdd83bb6-8a4a-42f9-906b-874aa2a2a034"
+}
 ```
 
-## Arquitetura
+Resposta de consume quando ha mensagem:
+
+```json
+{
+  "messageId": "fdd83bb6-8a4a-42f9-906b-874aa2a2a034",
+  "message": "hello",
+  "redelivered": false
+}
+```
+
+Resposta de consume quando nao ha mensagem no timeout:
+
+```json
+{
+  "message": null
+}
+```
+
+## Protocolo TCP (contrato exato)
+
+### Framing
 
 ```
-MelonMQ.Protocol   - Tipos compartilhados (MessageType, payloads)
-MelonMQ.Broker     - Servidor TCP + HTTP, filas, persistência, GC
-MelonMQ.Client     - Cliente .NET com retry, heartbeat, prefetch
+[4 bytes little-endian uint32 = tamanho do JSON][JSON UTF-8]
 ```
 
-O protocolo TCP usa frames length-prefixed: 4 bytes com o tamanho do payload seguido de JSON serializado. O broker usa `System.IO.Pipelines` para leitura eficiente e `System.Threading.Channels` como estrutura interna das filas.
+Frame:
 
-Persistência funciona com append-only log em disco (JSON lines) com compactação automática quando o arquivo passa do threshold configurado. Mensagens acked e expiradas são removidas na compactação.
+```json
+{ "type": "PUBLISH", "corrId": 12, "payload": { ... } }
+```
+
+- type: nome do comando (serializer oficial envia em UPPERCASE).
+- corrId: correlacao request/response.
+- payload: objeto do comando.
+- DELIVER e frame server->client com corrId = 0.
+
+### Comandos implementados
+
+| Tipo | Direcao | Payload de entrada |
+|---|---|---|
+| AUTH | C->S | { username, password } |
+| DECLAREQUEUE | C->S | { queue, durable, deadLetterQueue, defaultTtlMs, mode, streamMaxLengthMessages, streamMaxAgeMs } |
+| PUBLISH | C->S | { queue, exchange, routingKey, bodyBase64, ttlMs, persistent, messageId } |
+| CONSUMESUBSCRIBE | C->S | { queue, group, offset } |
+| ACK | C->S | { deliveryTag } |
+| NACK | C->S | { deliveryTag, requeue } |
+| SETPREFETCH | C->S | { prefetch } |
+| DECLAREEXCHANGE | C->S | { exchange, type, durable } |
+| BINDQUEUE | C->S | { exchange, queue, routingKey } |
+| UNBINDQUEUE | C->S | { exchange, queue, routingKey } |
+| STREAMACK | C->S | { queue, offset, group } |
+| HEARTBEAT | C<->S | {} |
+| DELIVER | S->C | { queue, deliveryTag, bodyBase64, redelivered, messageId, offset } |
+
+Observacoes importantes:
+
+- Nao existe CONSUMEUNSUBSCRIBE no protocolo atual.
+- Prefetch aceito: 1 a 10000.
+- DeliveryTag e ulong (64 bits).
+- Tamanho maximo de frame respeita MessageSizePolicy (base64 + overhead do envelope).
+
+## Cliente .NET (MelonMQ.Client)
+
+API publica atual:
+
+- DeclareQueueAsync
+- PublishAsync
+- ConsumeAsync
+- AckAsync / NackAsync
+- SetPrefetchAsync
+- DeclareExchangeAsync / BindQueueAsync / UnbindQueueAsync / PublishToExchangeAsync
+- DeclareStreamQueueAsync / ConsumeStreamAsync / StreamAckAsync
+
+Exemplo classico:
+
+```csharp
+using MelonMQ.Client;
+
+using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
+using var channel = await connection.CreateChannelAsync();
+
+await channel.DeclareQueueAsync("orders.created", durable: true, dlq: "orders.created.dlq", defaultTtlMs: 300000);
+await channel.PublishAsync("orders.created", System.Text.Encoding.UTF8.GetBytes("hello"), persistent: true);
+
+await foreach (var msg in channel.ConsumeAsync("orders.created", prefetch: 50))
+{
+    await channel.AckAsync(msg.DeliveryTag);
+}
+```
+
+Exemplo exchange (topic):
+
+```csharp
+await channel.DeclareExchangeAsync("events", type: "topic", durable: true);
+await channel.DeclareQueueAsync("events.orders", durable: true);
+await channel.BindQueueAsync("events", "events.orders", "orders.#");
+
+await channel.PublishToExchangeAsync(
+    "events",
+    "orders.created",
+    System.Text.Encoding.UTF8.GetBytes("{\"event\":\"order_created\"}"),
+    persistent: true);
+```
+
+Exemplo stream:
+
+```csharp
+await channel.DeclareStreamQueueAsync("audit.events", durable: true, maxMessages: 10000);
+await channel.PublishAsync("audit.events", System.Text.Encoding.UTF8.GetBytes("entry"));
+
+await foreach (var msg in channel.ConsumeStreamAsync("audit.events", startOffset: 0, group: "analytics"))
+{
+    if (msg.Offset.HasValue)
+        await channel.StreamAckAsync("audit.events", msg.Offset.Value, group: "analytics");
+}
+```
+
+### Configuracao de conexao .NET
+
+MelonConnectionOptions:
+
+- RetryPolicy.MaxRetryAttempts default 5
+- RetryPolicy.InitialDelay default 1s
+- RetryPolicy.MaxDelay default 30s
+- RetryPolicy.BackoffMultiplier default 2.0
+- RetryPolicy.EnableRetry default true
+- HeartbeatInterval default 10s
+- UseTls default false
+- AllowUntrustedServerCertificate default false
+- TlsTargetHost opcional
+- CheckCertificateRevocation default true
+- MaxMessageSize default 1MB
+
+## Semantica de entrega e durabilidade (hoje)
+
+### At-least-once
+
+- O broker pode reentregar mensagens.
+- O consumidor deve ser idempotente (messageId no storage da aplicacao).
+
+### Regras atuais relevantes
+
+- ACK/NACK so podem ser feitos pela mesma conexao que recebeu o delivery tag.
+- Mensagens sem ACK sao reencoladas em desconexao.
+- HTTP consume faz auto-ack (nao ha ACK posterior no fluxo HTTP).
+- MaxDeliveryCount da fila classica e 5 (fixo no runtime atual) antes de encaminhar para DLQ.
+- TTL pode vir por mensagem (ttlMs) ou por default da fila (defaultTtlMs).
+
+### Durabilidade de fila classica
+
+- Enqueue duravel entra em append log com flush em batch (assinado por BatchFlushMs).
+- ACK e PURGE usam persistencia critica com espera de flush.
+- Compactacao remove tombstones e expiradas acima de CompactionThresholdMB.
+
+### Streams
+
+- Entradas do stream podem ser persistidas (quando stream e duravel).
+- Offsets de consumidor/grupo sao mantidos em memoria no runtime atual.
+
+### Exchanges
+
+- Exchange e bindings funcionam em runtime.
+- Flag durable existe no contrato, mas metadados de exchange/binding nao sao persistidos no runtime atual.
+
+### Autenticacao TCP e cliente oficial
+
+- O broker suporta frame AUTH (username/password) quando Security.RequireAuth=true.
+- O MelonMQ.Client publico ainda nao expoe metodo AuthAsync.
+- Se RequireAuth=true, clientes custom de protocolo sao necessarios hoje para autenticar via TCP.
+
+## Samples (configuracao exata)
+
+### Producer sample
+
+Arquivo: samples/Producer/Program.cs
+
+Variaveis de ambiente:
+
+- MELON_SAMPLE_EXCHANGE=1 ativa publish em exchange topic events.
+- MELON_SAMPLE_STREAM=1 ativa append em stream audit.events.
+
+### Consumer sample
+
+Arquivo: samples/Consumer/Program.cs
+
+Variaveis de ambiente:
+
+- MELON_HTTP_PORT (default 9090)
+- MELON_HOST (default localhost)
+- MELON_PORT (default 5672)
+- MELON_SAMPLE_EXCHANGE=1 ativa consumo das filas events.*
+- MELON_SAMPLE_GROUPS=1 ativa demo de grupos (processors/auditors)
+- MELON_SAMPLE_STREAM=1 ativa consumo de stream audit.events
+- MELON_SAMPLE_DEDUPE_MODE=off|memory|sqlite (default sqlite)
+- MELON_SAMPLE_DEDUPE_DB (default melonmq_inbox.db)
+- MELON_SAMPLE_DEDUPE_TTL_MIN (default 60, clamp 1..1440)
+- MELON_SAMPLE_DEDUPE_MAX (default 200000, clamp 1000..5000000)
 
 ## Testes
 
 ```bash
-dotnet test
+dotnet test MelonMQ.sln --nologo
 ```
 
-Inclui testes unitários, de integração e benchmarks.
+Cobertura atual inclui unitarios e integracao para:
 
-## Roadmap
+- fila classica, redelivery, persistencia e restart
+- exchange direct/fanout/topic
+- stream offset/replay/group
+- TLS ponta a ponta
+- seguranca HTTP por API key
+- cluster (leader/quorum)
+- observabilidade Prometheus/OTLP
 
-- [x] Publicação e consumo de mensagens via TCP
-- [x] Persistência em disco com compactação
-- [x] API HTTP
-- [x] Cliente .NET com retry e heartbeat
-- [x] Dead Letter Queues
-- [x] TTL de mensagens
-- [x] Queue Garbage Collector
-- [x] Interface web
-- [ ] Autenticação JWT
-- [x] Métricas (Prometheus/OpenTelemetry)
-- [x] Clustering
-- [ ] SDKs para outras linguagens
+## Roadmap tecnico (lacunas atuais)
 
-## SDKs da comunidade
+Os itens abaixo refletem gaps reais do runtime atual frente a brokers como RabbitMQ/Kafka.
 
-O protocolo TCP do MelonMQ é aberto e simples de implementar em qualquer linguagem (veja a seção [Protocolo TCP](#protocolo-tcp)). Contribuições de SDKs são bem-vindas!
+- [ ] Publisher confirm duravel (ack de publish somente apos flush/fsync)
+  O que resolve: reduz janela de perda em crash apos ACK de publish.
+  Como configurar hoje (mitigacao): BatchFlushMs baixo (ou 0), Cluster.Consistency=quorum, Cluster.RequireQuorumForWrites=true.
 
-Para criar um SDK:
-1. Implemente o framing: prefixo de 4 bytes LE + JSON UTF-8
-2. Gerencie `corrId` incrementalmente para correlacionar respostas
-3. Trate frames `DELIVER` (`corrId: 0`) separadamente dos demais
-4. Registre o handler de `DELIVER` antes de enviar `CONSUMESUBSCRIBE`
-5. Abra um PR ou issue com o link do repositório
+- [ ] Persistencia de offsets de stream consumer/group
+  O que resolve: retomada consistente de grupos apos restart sem replay manual.
+  Como configurar hoje (mitigacao): usar StreamAck frequente e guardar checkpoint/idempotencia fora do broker.
 
-## Licença
+- [ ] Persistencia de metadados de exchange e bindings
+  O que resolve: evita redeclaracao manual de topologias apos restart.
+  Como configurar hoje (mitigacao): executar bootstrap declarativo de exchanges/bindings no startup dos servicos.
+
+- [ ] Autenticacao TCP completa no SDK oficial .NET
+  O que resolve: permite Security.RequireAuth=true sem cliente custom.
+  Como configurar hoje (mitigacao): manter RequireAuth=false para uso exclusivo com MelonMQ.Client, ou implementar cliente de protocolo com frame AUTH.
+
+- [ ] Consenso de cluster forte (log de consenso e eleicao robusta)
+  O que resolve: reduz riscos em split-brain e melhora garantias de replicacao.
+  Como configurar hoje (mitigacao): usar 3 nos, SharedKey obrigatoria, Consistency=quorum e RequireQuorumForWrites=true.
+
+- [ ] Streams particionados e rebalance automatica de grupos
+  O que resolve: escala horizontal de throughput de stream e distribuicao automatica de carga.
+  Como configurar hoje (mitigacao): shard manual por multiplas filas/streams e distribuicao por naming/routing key.
+
+- [ ] Exactly-once transacional opcional (end-to-end)
+  O que resolve: elimina duplicidade sem depender totalmente de dedupe da aplicacao.
+  Como configurar hoje (mitigacao): manter padrao at-least-once + idempotencia por messageId no consumidor.
+
+- [ ] SDKs oficiais adicionais e suite de conformidade de protocolo
+  O que resolve: melhora interoperabilidade multi-linguagem com menor risco de divergencia de implementacao.
+  Como configurar hoje (mitigacao): seguir framing/protocolo descritos nesta documentacao e validar em testes de integracao.
+
+## Licenca
 
 [MIT](LICENSE)

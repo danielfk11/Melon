@@ -546,8 +546,8 @@
             <div class="metric-card">
                 <div class="icon q">📦</div>
                 <span class="metric-label">Queues</span>
-                <span class="metric-value">{{ stats?.totalQueues ?? 0 }}</span>
-                <span class="metric-sub">Filas declaradas</span>
+                <span class="metric-value">{{ userQueueCount }}</span>
+                <span class="metric-sub">Filas declaradas (sem grupos)</span>
             </div>
             <div class="metric-card">
                 <div class="icon c">🔗</div>
@@ -559,13 +559,13 @@
                 <div class="icon m">💬</div>
                 <span class="metric-label">Pending</span>
                 <span class="metric-value">{{ totalPending }}</span>
-                <span class="metric-sub">Mensagens aguardando consumo</span>
+                <span class="metric-sub">Mensagens aguardando consumo (sem grupos)</span>
             </div>
             <div class="metric-card">
                 <div class="icon f">🚀</div>
                 <span class="metric-label">In-Flight</span>
                 <span class="metric-value">{{ totalInFlight }}</span>
-                <span class="metric-sub">Em processamento (não ack)</span>
+                <span class="metric-sub">Em processamento (não ack, sem grupos)</span>
             </div>
             <div class="metric-card">
                 <div class="icon pub">📤</div>
@@ -969,10 +969,16 @@ createApp({
             return this.health.status === 'healthy' ? 'healthy' : 'error';
         },
         totalPending() {
-            return this.stats?.queues?.reduce((s,q) => s + q.pendingMessages, 0) ?? 0;
+            return this.userQueues.reduce((s,q) => s + q.pendingMessages, 0);
         },
         totalInFlight() {
-            return this.stats?.queues?.reduce((s,q) => s + q.inFlightMessages, 0) ?? 0;
+            return this.userQueues.reduce((s,q) => s + q.inFlightMessages, 0);
+        },
+        userQueues() {
+            return (this.stats?.queues || []).filter(q => !this.isGroupQueue(q.name));
+        },
+        userQueueCount() {
+            return this.userQueues.length;
         },
         sortedQueues() {
             return [...(this.stats?.queues || [])].sort((a,b) => a.name.localeCompare(b.name));
@@ -1027,6 +1033,9 @@ createApp({
         },
     },
     methods: {
+        isGroupQueue(name) {
+            return typeof name === 'string' && name.startsWith('_grp:');
+        },
         metricCounterValue(name, metricsPayload = null) {
             const source = metricsPayload || this.stats?.metrics;
             const v = source?.['counter.' + name];

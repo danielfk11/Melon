@@ -2,8 +2,8 @@ using MelonMQ.Client;
 using System.Text;
 using System.Text.Json;
 
-Console.WriteLine("MelonMQ .NET Producer — Classic + Exchange + Stream");
-Console.WriteLine("====================================================");
+Console.WriteLine("MelonMQ .NET Producer — Classic (optional Exchange/Stream)");
+Console.WriteLine("=========================================================");
 Console.WriteLine();
 
 var cts = new CancellationTokenSource();
@@ -13,6 +13,13 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
     Console.WriteLine("\nShutting down...");
 };
+
+var enableExchange = Environment.GetEnvironmentVariable("MELON_SAMPLE_EXCHANGE") == "1";
+var enableStream = Environment.GetEnvironmentVariable("MELON_SAMPLE_STREAM") == "1";
+
+Console.WriteLine($"Exchange publish: {(enableExchange ? "on" : "off")}");
+Console.WriteLine($"Stream publish  : {(enableStream ? "on" : "off")}");
+Console.WriteLine();
 
 // ── queue catalogue (classic) ────────────────────────────────────────────────
 var queues = new (string Name, string? Dlq, int Ttl)[]
@@ -69,16 +76,22 @@ try
         await channel.DeclareQueueAsync(q.Name, durable: true, dlq: q.Dlq, defaultTtlMs: q.Ttl);
 
     // ── declare exchange + bound queues ───────────────────────────────────────
-    Console.WriteLine($"[setup] Declaring exchange '{EventsExchange}' (topic)...");
-    await channel.DeclareExchangeAsync(EventsExchange, type: "topic", durable: true);
-    foreach (var (queueName, _) in exchangeBindings)
-        await channel.DeclareQueueAsync(queueName, durable: true);
-    foreach (var (queueName, routingKey) in exchangeBindings)
-        await channel.BindQueueAsync(EventsExchange, queueName, routingKey);
+    if (enableExchange)
+    {
+        Console.WriteLine($"[setup] Declaring exchange '{EventsExchange}' (topic)...");
+        await channel.DeclareExchangeAsync(EventsExchange, type: "topic", durable: true);
+        foreach (var (queueName, _) in exchangeBindings)
+            await channel.DeclareQueueAsync(queueName, durable: true);
+        foreach (var (queueName, routingKey) in exchangeBindings)
+            await channel.BindQueueAsync(EventsExchange, queueName, routingKey);
+    }
 
     // ── declare stream queue ──────────────────────────────────────────────────
-    Console.WriteLine($"[setup] Declaring stream queue '{AuditStream}'...");
-    await channel.DeclareStreamQueueAsync(AuditStream, durable: true, maxMessages: 10_000);
+    if (enableStream)
+    {
+        Console.WriteLine($"[setup] Declaring stream queue '{AuditStream}'...");
+        await channel.DeclareStreamQueueAsync(AuditStream, durable: true, maxMessages: 10_000);
+    }
 
     Console.WriteLine($"  ✓ Setup complete\n");
     Console.WriteLine("Ctrl+C to stop.\n");
@@ -100,12 +113,18 @@ try
             // 1) Publish directly to classic queue
             await channel.PublishAsync(q.Name, body, persistent: true, ttlMs: q.Ttl, cancellationToken: cts.Token);
 
-            // 2) Also publish to topic exchange with the queue name as routing key
-            await channel.PublishToExchangeAsync(EventsExchange, q.Name, body,
-                persistent: true, cancellationToken: cts.Token);
+            if (enableExchange)
+            {
+                // 2) Also publish to topic exchange with the queue name as routing key
+                await channel.PublishToExchangeAsync(EventsExchange, q.Name, body,
+                    persistent: true, cancellationToken: cts.Token);
+            }
 
-            // 3) Append to audit stream
-            await channel.PublishAsync(AuditStream, body, cancellationToken: cts.Token);
+            if (enableStream)
+            {
+                // 3) Append to audit stream
+                await channel.PublishAsync(AuditStream, body, cancellationToken: cts.Token);
+            }
 
             totalSent++;
             Console.WriteLine($"  ✓ [{totalSent,4}] {q.Name} → {JsonSerializer.Serialize(payload)}");
