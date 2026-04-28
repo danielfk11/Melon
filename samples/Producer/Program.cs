@@ -74,7 +74,7 @@ try
     Console.WriteLine($"[setup] Declaring {queues.Length} classic queues...");
     foreach (var q in queues)
         await channel.DeclareQueueAsync(q.Name, durable: true, dlq: q.Dlq, defaultTtlMs: q.Ttl);
-
+ 
     // ── declare exchange + bound queues ───────────────────────────────────────
     if (enableExchange)
     {

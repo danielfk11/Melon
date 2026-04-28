@@ -501,7 +501,8 @@ Se preferir autenticar explicitamente apos conectar, use:
 ### Streams
 
 - Entradas do stream podem ser persistidas (quando stream e duravel).
-- Offsets de consumidor/grupo sao mantidos em memoria no runtime atual.
+- Offsets de consumidor/grupo sao persistidos para streams duraveis e retomados apos restart.
+- Em streams nao duraveis, offsets continuam em memoria durante a vida do processo.
 
 ### Exchanges
 
@@ -565,17 +566,9 @@ Cobertura atual inclui unitarios e integracao para:
   O que resolve: reduz janela de perda em crash apos ACK de publish.
   Como configurar hoje (mitigacao): BatchFlushMs baixo (ou 0), Cluster.Consistency=quorum, Cluster.RequireQuorumForWrites=true.
 
-- [ ] Persistencia de offsets de stream consumer/group
-  O que resolve: retomada consistente de grupos apos restart sem replay manual.
-  Como configurar hoje (mitigacao): usar StreamAck frequente e guardar checkpoint/idempotencia fora do broker.
-
 - [ ] Persistencia de metadados de exchange e bindings
   O que resolve: evita redeclaracao manual de topologias apos restart.
   Como configurar hoje (mitigacao): executar bootstrap declarativo de exchanges/bindings no startup dos servicos.
-
-- [ ] Autenticacao TCP completa no SDK oficial .NET
-  O que resolve: permite Security.RequireAuth=true sem cliente custom.
-  Como configurar hoje (mitigacao): manter RequireAuth=false para uso exclusivo com MelonMQ.Client, ou implementar cliente de protocolo com frame AUTH.
 
 - [ ] Consenso de cluster forte (log de consenso e eleicao robusta)
   O que resolve: reduz riscos em split-brain e melhora garantias de replicacao.

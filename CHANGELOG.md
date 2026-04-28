@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Persistencia de offsets de stream consumer/group para filas duraveis, com retomada apos restart do broker.
+- Teste de integracao cobrindo `StreamAck` com restart no mesmo `DataDirectory`.
+
 ## 1.0.0-preview.2 - 2026-04-28
 
 - Alinhamento do repositorio com o estado publicado apos o preview inicial.

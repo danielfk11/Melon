@@ -167,6 +167,46 @@ public class StreamQueueIntegrationTests : IAsyncLifetime
         Str(batch2[2].Body).Should().Be("item-5");
     }
 
+    [Fact]
+    public async Task StreamAck_CommitsOffset_PersistsAcrossBrokerRestart()
+    {
+        var dataDir = Path.Combine(Path.GetTempPath(), "melonmq-tests", Guid.NewGuid().ToString("N"));
+        const string queueName = "stream.ackrestart";
+        const string groupName = "restart-group";
+
+        await using (var host = new TestBrokerHost(dataDir))
+        {
+            await host.StartAsync();
+
+            await using var conn = await MelonConnection.ConnectAsync($"melon://127.0.0.1:{host.TcpPort}");
+            await using var ch = await conn.CreateChannelAsync();
+
+            await ch.DeclareStreamQueueAsync(queueName, durable: true);
+
+            for (int i = 0; i < 6; i++)
+                await ch.PublishAsync(queueName, Bytes($"item-{i}"), persistent: true);
+
+            var batch1 = await CollectN(ch, queueName, 3, startOffset: 0, group: groupName);
+            await ch.StreamAckAsync(queueName, batch1[^1].Offset!.Value, group: groupName);
+        }
+
+        await using (var restarted = new TestBrokerHost(dataDir))
+        {
+            await restarted.StartAsync();
+
+            await using var conn = await MelonConnection.ConnectAsync($"melon://127.0.0.1:{restarted.TcpPort}");
+            await using var ch = await conn.CreateChannelAsync();
+
+            await ch.DeclareStreamQueueAsync(queueName, durable: true);
+
+            var batch2 = await CollectN(ch, queueName, 3, group: groupName);
+
+            Str(batch2[0].Body).Should().Be("item-3", "group should resume from persisted committed offset after restart");
+            Str(batch2[1].Body).Should().Be("item-4");
+            Str(batch2[2].Body).Should().Be("item-5");
+        }
+    }
+
     // ── independent groups get all messages ──────────────────────────────────
 
     [Fact]

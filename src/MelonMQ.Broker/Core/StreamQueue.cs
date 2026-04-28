@@ -26,6 +26,8 @@ public sealed class StreamQueue : IDisposable
     private readonly long? _maxAgeMs;
     private readonly ILogger _logger;
     private readonly string? _persistenceFilePath;
+    private readonly string? _offsetPersistenceFilePath;
+    private readonly object _offsetPersistenceLock = new();
 
     // Entries are stored in arrival order; _baseOffset is the offset of _entries[0].
     private readonly List<StreamEntry> _entries = new();
@@ -59,7 +61,8 @@ public sealed class StreamQueue : IDisposable
         if (_durable && !string.IsNullOrEmpty(dataDirectory))
         {
             _persistenceFilePath = Path.Combine(dataDirectory, $"stream_{name}.log");
-            _ = Task.Run(LoadPersistedEntriesAsync);
+            _offsetPersistenceFilePath = Path.Combine(dataDirectory, $"stream_{name}.offsets.log");
+            LoadPersistedState();
         }
     }
 
@@ -175,10 +178,15 @@ public sealed class StreamQueue : IDisposable
 
     public void CommitOffset(string consumerId, long offset)
     {
-        _consumerOffsets.AddOrUpdate(
+        var nextOffset = _consumerOffsets.AddOrUpdate(
             consumerId,
             offset + 1,
             (_, prev) => Math.Max(prev, offset + 1));
+
+        if (_durable && _offsetPersistenceFilePath != null)
+        {
+            PersistCommittedOffset(consumerId, nextOffset);
+        }
     }
 
     public long GetCommittedOffset(string consumerId) =>
@@ -250,61 +258,99 @@ public sealed class StreamQueue : IDisposable
         }
     }
 
-    private async Task LoadPersistedEntriesAsync()
+    private void LoadPersistedState()
+    {
+        try
+        {
+            LoadPersistedEntries();
+            LoadPersistedOffsets();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load persisted stream state for queue '{Name}'", _name);
+        }
+    }
+
+    private void LoadPersistedEntries()
     {
         if (_persistenceFilePath == null || !File.Exists(_persistenceFilePath))
             return;
 
-        try
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var lines = File.ReadAllLines(_persistenceFilePath);
+
+        foreach (var line in lines.Where(l => !string.IsNullOrWhiteSpace(l)))
         {
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var lines = await File.ReadAllLinesAsync(_persistenceFilePath);
-
-            foreach (var line in lines.Where(l => !string.IsNullOrWhiteSpace(l)))
+            try
             {
-                try
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.GetProperty("op").GetString() != "append") continue;
+
+                long? expiresAt = null;
+                if (root.TryGetProperty("expiresAt", out var expEl) &&
+                    expEl.ValueKind != JsonValueKind.Null)
                 {
-                    using var doc = JsonDocument.Parse(line);
-                    var root = doc.RootElement;
-                    if (root.GetProperty("op").GetString() != "append") continue;
-
-                    long? expiresAt = null;
-                    if (root.TryGetProperty("expiresAt", out var expEl) &&
-                        expEl.ValueKind != JsonValueKind.Null)
-                    {
-                        expiresAt = expEl.GetInt64();
-                    }
-
-                    if (expiresAt.HasValue && expiresAt <= nowMs)
-                        continue; // expired
-
-                    var entry = new StreamEntry(
-                        root.GetProperty("offset").GetInt64(),
-                        Guid.Parse(root.GetProperty("messageId").GetString()!),
-                        Convert.FromBase64String(root.GetProperty("bodyBase64").GetString()!),
-                        root.GetProperty("enqueuedAt").GetInt64(),
-                        expiresAt);
-
-                    lock (_entries)
-                    {
-                        _entries.Add(entry);
-                        if (_nextOffset <= entry.Offset)
-                            _nextOffset = entry.Offset + 1;
-                    }
+                    expiresAt = expEl.GetInt64();
                 }
-                catch
+
+                if (expiresAt.HasValue && expiresAt <= nowMs)
+                    continue;
+
+                var entry = new StreamEntry(
+                    root.GetProperty("offset").GetInt64(),
+                    Guid.Parse(root.GetProperty("messageId").GetString()!),
+                    Convert.FromBase64String(root.GetProperty("bodyBase64").GetString()!),
+                    root.GetProperty("enqueuedAt").GetInt64(),
+                    expiresAt);
+
+                lock (_entries)
                 {
-                    // Skip corrupt lines
+                    _entries.Add(entry);
+                    if (_nextOffset <= entry.Offset)
+                        _nextOffset = entry.Offset + 1;
                 }
             }
+            catch
+            {
+                // Skip corrupt lines
+            }
+        }
 
-            _logger.LogInformation(
-                "Loaded {Count} stream entries for queue '{Name}'", _entries.Count, _name);
-        }
-        catch (Exception ex)
+        _logger.LogInformation(
+            "Loaded {Count} stream entries for queue '{Name}'", _entries.Count, _name);
+    }
+
+    private void LoadPersistedOffsets()
+    {
+        if (_offsetPersistenceFilePath == null || !File.Exists(_offsetPersistenceFilePath))
+            return;
+
+        foreach (var line in File.ReadLines(_offsetPersistenceFilePath).Where(l => !string.IsNullOrWhiteSpace(l)))
         {
-            _logger.LogError(ex, "Failed to load stream entries for queue '{Name}'", _name);
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.GetProperty("op").GetString() != "commit") continue;
+
+                var consumerId = root.GetProperty("consumerId").GetString();
+                if (string.IsNullOrWhiteSpace(consumerId)) continue;
+
+                var nextOffset = root.GetProperty("nextOffset").GetInt64();
+                _consumerOffsets.AddOrUpdate(
+                    consumerId,
+                    nextOffset,
+                    (_, previous) => Math.Max(previous, nextOffset));
+            }
+            catch
+            {
+                // Skip corrupt lines
+            }
         }
+
+        _logger.LogInformation(
+            "Loaded {Count} committed stream offsets for queue '{Name}'", _consumerOffsets.Count, _name);
     }
 
     public void DeletePersistenceFile()
@@ -312,6 +358,38 @@ public sealed class StreamQueue : IDisposable
         if (_persistenceFilePath != null && File.Exists(_persistenceFilePath))
         {
             try { File.Delete(_persistenceFilePath); } catch { }
+        }
+
+        if (_offsetPersistenceFilePath != null && File.Exists(_offsetPersistenceFilePath))
+        {
+            try { File.Delete(_offsetPersistenceFilePath); } catch { }
+        }
+    }
+
+    private void PersistCommittedOffset(string consumerId, long nextOffset)
+    {
+        try
+        {
+            var line = JsonSerializer.Serialize(new
+            {
+                op = "commit",
+                consumerId,
+                nextOffset
+            });
+
+            lock (_offsetPersistenceLock)
+            {
+                File.AppendAllText(_offsetPersistenceFilePath!, line + "\n");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to persist committed offset {NextOffset} for consumer '{ConsumerId}' on queue '{Name}'",
+                nextOffset,
+                consumerId,
+                _name);
         }
     }
 
