@@ -112,6 +112,28 @@
 				"HEAD"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "dotnet-restore-sln-nologo",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"restore",
+				"MelonMQ.sln",
+				"--nologo"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "dotnet-test-unit-csproj",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj",
+				"--nologo"
+			],
+			"isBackground": false
 		}
 	]
 }
