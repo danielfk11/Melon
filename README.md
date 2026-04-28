@@ -561,8 +561,6 @@ Cobertura atual inclui unitarios e integracao para:
 
 ## Roadmap tecnico (lacunas atuais)
 
-Os itens abaixo refletem gaps reais do runtime atual frente a brokers como RabbitMQ/Kafka.
-
 - [ ] Publisher confirm duravel (ack de publish somente apos flush/fsync)
   O que resolve: reduz janela de perda em crash apos ACK de publish.
   Como configurar hoje (mitigacao): BatchFlushMs baixo (ou 0), Cluster.Consistency=quorum, Cluster.RequireQuorumForWrites=true.
