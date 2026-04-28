@@ -55,6 +55,63 @@
 				"--nologo"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "git-show-head-preview2",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"show",
+				"--stat",
+				"--oneline",
+				"-1",
+				"HEAD"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-show-tag-preview2",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"show-ref",
+				"--tags",
+				"v1.0.0-preview.2"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-push-main-preview2",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"push",
+				"origin",
+				"main",
+				"v1.0.0-preview.2"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "check-nuget-key-env",
+			"type": "shell",
+			"command": "zsh",
+			"args": [
+				"-lc",
+				"if [[ -n \"$NUGET_API_KEY\" ]]; then echo HAS_NUGET_KEY; else echo NO_NUGET_KEY; fi"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-rev-parse-head",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"rev-parse",
+				"--short",
+				"HEAD"
+			],
+			"isBackground": false
 		}
 	]
 }
