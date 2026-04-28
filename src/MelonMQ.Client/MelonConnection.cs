@@ -62,6 +62,7 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         var host = uri.Host;
         var port = uri.Port > 0 ? uri.Port : 5672;
         var useTls = options.UseTls || string.Equals(uri.Scheme, "melons", StringComparison.OrdinalIgnoreCase);
+    var credentials = ResolveCredentials(uri, options);
 
         var retryPolicy = options.RetryPolicy;
         var tcpClient = await ConnectionHelper.ConnectWithRetryAsync(host, port, retryPolicy, cancellationToken);
@@ -109,8 +110,51 @@ public class MelonConnection : IDisposable, IAsyncDisposable
             outgoingPipe.Reader,
             incomingPipe.Writer,
             options.HeartbeatInterval);
+
+        if (credentials is not null)
+        {
+            try
+            {
+                await connection.AuthenticateAsync(credentials.Value.Username, credentials.Value.Password, cancellationToken);
+            }
+            catch
+            {
+                await connection.DisposeAsync();
+                throw;
+            }
+        }
         
         return connection;
+    }
+
+    public async Task AuthenticateAsync(string username, string password, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        {
+            throw new ArgumentException("Username and password are required for authentication.");
+        }
+
+        var payload = new AuthPayload
+        {
+            Username = username,
+            Password = password
+        };
+
+        var response = await SendRequestAsync(MessageType.Auth, payload, cancellationToken);
+        if (response.Type == MessageType.Error)
+        {
+            throw new InvalidOperationException(GetBrokerMessage(response.Payload, "Authentication failed."));
+        }
+
+        if (response.Type != MessageType.Auth)
+        {
+            throw new InvalidOperationException($"Unexpected authentication response type '{response.Type}'.");
+        }
+
+        if (response.Payload?.TryGetProperty("success", out var successElement) == true && !successElement.GetBoolean())
+        {
+            throw new InvalidOperationException(GetBrokerMessage(response.Payload, "Authentication failed."));
+        }
     }
 
     public Task<MelonChannel> CreateChannelAsync(CancellationToken cancellationToken = default)
@@ -373,5 +417,52 @@ public class MelonConnection : IDisposable, IAsyncDisposable
         await _stream.DisposeAsync();
         _tcpClient.Close();
         _cancellationTokenSource.Dispose();
+    }
+
+    private static (string Username, string Password)? ResolveCredentials(Uri uri, MelonConnectionOptions options)
+    {
+        var username = options.Username;
+        var password = options.Password;
+
+        if (string.IsNullOrWhiteSpace(username) && string.IsNullOrWhiteSpace(password) && !string.IsNullOrEmpty(uri.UserInfo))
+        {
+            var separatorIndex = uri.UserInfo.IndexOf(':');
+            if (separatorIndex < 0)
+            {
+                username = Uri.UnescapeDataString(uri.UserInfo);
+                password = string.Empty;
+            }
+            else
+            {
+                username = Uri.UnescapeDataString(uri.UserInfo[..separatorIndex]);
+                password = Uri.UnescapeDataString(uri.UserInfo[(separatorIndex + 1)..]);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(username) && string.IsNullOrWhiteSpace(password))
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        {
+            throw new InvalidOperationException("Both username and password must be provided for MelonMQ authentication.");
+        }
+
+        return (username, password);
+    }
+
+    private static string GetBrokerMessage(System.Text.Json.JsonElement? payload, string fallbackMessage)
+    {
+        if (payload?.TryGetProperty("message", out var messageElement) == true)
+        {
+            var message = messageElement.GetString();
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                return message;
+            }
+        }
+
+        return fallbackMessage;
     }
 }

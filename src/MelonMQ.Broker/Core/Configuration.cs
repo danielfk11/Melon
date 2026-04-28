@@ -26,7 +26,7 @@ public class MelonMQConfiguration
 public class ObservabilityConfiguration
 {
     public string ServiceName { get; set; } = "MelonMQ.Broker";
-    public string ServiceVersion { get; set; } = "1.0.0";
+    public string ServiceVersion { get; set; } = "1.0.0-preview.2";
     public PrometheusConfiguration Prometheus { get; set; } = new();
     public OtlpConfiguration Otlp { get; set; } = new();
 }

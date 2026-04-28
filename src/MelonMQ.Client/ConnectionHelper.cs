@@ -72,6 +72,8 @@ public class MelonConnectionOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(10);
     public bool AutoReconnect { get; set; } = true;
     public int MaxChannels { get; set; } = 100;
+    public string? Username { get; set; }
+    public string? Password { get; set; }
     public bool UseTls { get; set; } = false;
     public bool AllowUntrustedServerCertificate { get; set; } = false;
     public string? TlsTargetHost { get; set; }

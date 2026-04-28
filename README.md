@@ -2,6 +2,12 @@
 
 Message broker leve em C# com protocolo TCP binario (framing + JSON) e API HTTP para operacao/admin.
 
+## Posicionamento da release
+
+- Estado publico atual: preview tecnica / beta aberta.
+- Indicado hoje para avaliacao, labs, homologacao e integracoes controladas.
+- Antes de chamar de release estavel, considere estas limitacoes atuais: offsets de consumer groups de stream ficam em memoria e metadados de exchanges/bindings duraveis ainda nao sao persistidos no runtime.
+
 ## Estado atual do projeto
 
 - Filas classicas com ACK/NACK, DLQ, TTL, prefetch e redelivery.
@@ -401,6 +407,23 @@ await foreach (var msg in channel.ConsumeAsync("orders.created", prefetch: 50))
 }
 ```
 
+Exemplo com TLS + AUTH:
+
+```csharp
+using MelonMQ.Client;
+
+var options = new MelonConnectionOptions
+{
+  UseTls = true,
+  TlsTargetHost = "localhost",
+  Username = "app",
+  Password = "secret"
+};
+
+using var connection = await MelonConnection.ConnectAsync("melons://localhost:5672", options);
+using var channel = await connection.CreateChannelAsync();
+```
+
 Exemplo exchange (topic):
 
 ```csharp
@@ -438,11 +461,21 @@ MelonConnectionOptions:
 - RetryPolicy.BackoffMultiplier default 2.0
 - RetryPolicy.EnableRetry default true
 - HeartbeatInterval default 10s
+- Username / Password opcionais; quando informados, o cliente envia AUTH automaticamente apos conectar
 - UseTls default false
 - AllowUntrustedServerCertificate default false
 - TlsTargetHost opcional
 - CheckCertificateRevocation default true
 - MaxMessageSize default 1MB
+
+Autenticacao tambem pode vir no URI de conexao:
+
+- melon://usuario:senha@localhost:5672
+- melons://usuario:senha@localhost:5672
+
+Se preferir autenticar explicitamente apos conectar, use:
+
+- await connection.AuthenticateAsync("usuario", "senha")
 
 ## Semantica de entrega e durabilidade (hoje)
 
@@ -478,8 +511,9 @@ MelonConnectionOptions:
 ### Autenticacao TCP e cliente oficial
 
 - O broker suporta frame AUTH (username/password) quando Security.RequireAuth=true.
-- O MelonMQ.Client publico ainda nao expoe metodo AuthAsync.
-- Se RequireAuth=true, clientes custom de protocolo sao necessarios hoje para autenticar via TCP.
+- O MelonMQ.Client publico agora suporta AuthenticateAsync(username, password).
+- Se Username/Password forem informados em MelonConnectionOptions ou no URI, o cliente autentica automaticamente apos conectar.
+- Fluxo validado em integracao com RequireAuth=true + TLS habilitado.
 
 ## Samples (configuracao exata)
 

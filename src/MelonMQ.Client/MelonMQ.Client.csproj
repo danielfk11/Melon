@@ -6,12 +6,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>MelonMQ.Client</PackageId>
-    <Version>1.0.0</Version>
-    <Authors>MelonMQ</Authors>
-    <Description>Simple and efficient message queue client for MelonMQ broker</Description>
+    <Version>1.0.0-preview.2</Version>
+    <Authors>MelonMQ Team</Authors>
+    <Description>Preview .NET client for the MelonMQ broker with TCP, TLS, and AUTH support</Description>
+    <PackageTags>messagequeue;broker;dotnet;csharp;messaging;client;tcp;preview</PackageTags>
+    <RepositoryUrl>https://github.com/danielfk11/MelonMQ</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageProjectUrl>https://github.com/danielfk11/MelonMQ</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Link="README.md" />
   </ItemGroup>
 
   <ItemGroup>

@@ -5,9 +5,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PackageId>MelonMQ.Protocol</PackageId>
-    <Version>1.0.0</Version>
-    <Authors>MelonMQ</Authors>
+    <Version>1.0.0-preview.2</Version>
+    <Authors>MelonMQ Team</Authors>
     <Description>Shared protocol types for MelonMQ broker and client</Description>
+    <PackageTags>messagequeue;broker;dotnet;csharp;messaging;protocol;preview</PackageTags>
+    <RepositoryUrl>https://github.com/danielfk11/MelonMQ</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageProjectUrl>https://github.com/danielfk11/MelonMQ</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Link="README.md" />
+  </ItemGroup>
 
 </Project>

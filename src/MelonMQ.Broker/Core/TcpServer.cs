@@ -1336,8 +1336,9 @@ public class TcpServer
             throw new InvalidOperationException("TCP TLS certificate path is empty.");
         }
 
-        return string.IsNullOrEmpty(tlsConfig.CertificatePassword)
-            ? new X509Certificate2(tlsConfig.CertificatePath)
-            : new X509Certificate2(tlsConfig.CertificatePath, tlsConfig.CertificatePassword);
+        return X509CertificateLoader.LoadPkcs12FromFile(
+            tlsConfig.CertificatePath,
+            tlsConfig.CertificatePassword,
+            X509KeyStorageFlags.DefaultKeySet);
     }
 }
