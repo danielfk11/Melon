@@ -103,7 +103,10 @@ public class MessageQueue : IDisposable
         Interlocked.Exchange(ref _lastActivityAt, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
-    public async Task<bool> EnqueueAsync(QueueMessage message, CancellationToken cancellationToken = default)
+    public async Task<bool> EnqueueAsync(
+        QueueMessage message,
+        CancellationToken cancellationToken = default,
+        bool waitForPersistenceFlush = false)
     {
         if (Volatile.Read(ref _disposed) == 1)
         {
@@ -133,7 +136,10 @@ public class MessageQueue : IDisposable
 
         if (_config.Durable)
         {
-            await QueuePersistenceRecordAsync(CreateEnqueueRecord(message), waitForFlush: false, cancellationToken);
+            await QueuePersistenceRecordAsync(
+                CreateEnqueueRecord(message),
+                waitForFlush: waitForPersistenceFlush,
+                cancellationToken);
         }
 
         await _writer.WriteAsync(message, cancellationToken);
@@ -441,7 +447,17 @@ public class MessageQueue : IDisposable
                     }
 
                     var text = sb.ToString();
-                    await File.AppendAllTextAsync(_persistenceFilePath, text);
+                    await using var stream = new FileStream(
+                        _persistenceFilePath,
+                        FileMode.Append,
+                        FileAccess.Write,
+                        FileShare.Read,
+                        bufferSize: 4096,
+                        useAsync: true);
+                    var bytes = Encoding.UTF8.GetBytes(text);
+                    await stream.WriteAsync(bytes);
+                    await stream.FlushAsync();
+                    stream.Flush(flushToDisk: true);
                     _persistenceFileSize += Encoding.UTF8.GetByteCount(text);
                     shouldCompact = _persistenceFileSize > _compactionThresholdBytes;
                 }

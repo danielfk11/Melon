@@ -42,6 +42,27 @@ public class MessageQueueDurabilityTests : IDisposable
     }
 
     [Fact]
+    public async Task DurableEnqueue_WithPublisherConfirm_ShouldFlushBeforeReturning()
+    {
+        var config = new QueueConfiguration
+        {
+            Name = "durable-confirm",
+            Durable = true
+        };
+
+        var message = CreateMessage("payload");
+        var logPath = Path.Combine(_tempDataDirectory, $"{config.Name}.log");
+
+        using var queue = CreateQueue(config, batchFlushMs: 250);
+
+        await queue.EnqueueAsync(message, waitForPersistenceFlush: true);
+
+        File.Exists(logPath).Should().BeTrue();
+        var persisted = await File.ReadAllTextAsync(logPath);
+        persisted.Should().Contain(message.MessageId.ToString(), "publisher confirm should return only after the durable enqueue is flushed to disk");
+    }
+
+    [Fact]
     public async Task AckTombstone_ShouldStayConsistent_WhenBatchFlushIsDelayed()
     {
         var config = new QueueConfiguration

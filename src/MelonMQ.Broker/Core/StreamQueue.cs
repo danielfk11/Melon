@@ -250,7 +250,17 @@ public sealed class StreamQueue : IDisposable
                 enqueuedAt = entry.EnqueuedAt,
                 expiresAt = entry.ExpiresAt
             });
-            await File.AppendAllTextAsync(_persistenceFilePath!, line + "\n");
+            await using var stream = new FileStream(
+                _persistenceFilePath!,
+                FileMode.Append,
+                FileAccess.Write,
+                FileShare.Read,
+                bufferSize: 4096,
+                useAsync: true);
+            var bytes = Encoding.UTF8.GetBytes(line + "\n");
+            await stream.WriteAsync(bytes);
+            await stream.FlushAsync();
+            stream.Flush(flushToDisk: true);
         }
         catch (Exception ex)
         {

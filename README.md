@@ -494,13 +494,13 @@ Se preferir autenticar explicitamente apos conectar, use:
 
 ### Durabilidade de fila classica
 
-- Enqueue duravel entra em append log com flush em batch (assinado por BatchFlushMs).
+- Publish para fila duravel so retorna sucesso apos o append log ser gravado e confirmado com flush/fsync.
 - ACK e PURGE usam persistencia critica com espera de flush.
 - Compactacao remove tombstones e expiradas acima de CompactionThresholdMB.
 
 ### Streams
 
-- Entradas do stream podem ser persistidas (quando stream e duravel).
+- Publish para stream duravel so retorna sucesso apos a entrada ser gravada e confirmada com flush/fsync.
 - Offsets de consumidor/grupo sao persistidos para streams duraveis e retomados apos restart.
 - Em streams nao duraveis, offsets continuam em memoria durante a vida do processo.
 
@@ -561,10 +561,6 @@ Cobertura atual inclui unitarios e integracao para:
 - observabilidade Prometheus/OTLP
 
 ## Roadmap tecnico (lacunas atuais)
-
-- [ ] Publisher confirm duravel (ack de publish somente apos flush/fsync)
-  O que resolve: reduz janela de perda em crash apos ACK de publish.
-  Como configurar hoje (mitigacao): BatchFlushMs baixo (ou 0), Cluster.Consistency=quorum, Cluster.RequireQuorumForWrites=true.
 
 - [ ] Persistencia de metadados de exchange e bindings
   O que resolve: evita redeclaracao manual de topologias apos restart.

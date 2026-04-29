@@ -672,7 +672,10 @@ public class TcpServer
             DeliveryCount = 0
         };
 
-        await queue.EnqueueAsync(message, cancellationToken);
+        await queue.EnqueueAsync(
+            message,
+            cancellationToken,
+            waitForPersistenceFlush: queue.IsDurable);
 
         // Fan-out to consumer group queues
         foreach (var groupQueue in _queueManager.GetGroupQueues(payload.Queue))
@@ -687,7 +690,10 @@ public class TcpServer
                 Redelivered = false,
                 DeliveryCount = 0
             };
-            await groupQueue.EnqueueAsync(groupMessage, cancellationToken);
+            await groupQueue.EnqueueAsync(
+                groupMessage,
+                cancellationToken,
+                waitForPersistenceFlush: groupQueue.IsDurable);
         }
 
         if (_clusterCoordinator?.Enabled == true)
@@ -746,7 +752,10 @@ public class TcpServer
             DeliveryCount = 0
         };
 
-        await queue.EnqueueAsync(message, cancellationToken);
+        await queue.EnqueueAsync(
+            message,
+            cancellationToken,
+            waitForPersistenceFlush: queue.IsDurable);
 
         foreach (var groupQueue in _queueManager.GetGroupQueues(queueName))
         {
@@ -757,7 +766,7 @@ public class TcpServer
                 EnqueuedAt = message.EnqueuedAt,
                 ExpiresAt = message.ExpiresAt,
                 Persistent = message.Persistent
-            }, cancellationToken);
+            }, cancellationToken, waitForPersistenceFlush: groupQueue.IsDurable);
         }
     }
 

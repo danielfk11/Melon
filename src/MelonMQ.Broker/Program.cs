@@ -238,7 +238,7 @@ app.MapPost("/cluster/replicate/publish", async (ClusterPublishReplicationReques
         DeliveryCount = request.DeliveryCount
     };
 
-    await queue.EnqueueAsync(message);
+    await queue.EnqueueAsync(message, waitForPersistenceFlush: queue.IsDurable);
     return Results.Ok(new { success = true });
 });
 
@@ -455,7 +455,7 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
                 : null
         };
 
-        var enqueued = await queue.EnqueueAsync(message);
+        var enqueued = await queue.EnqueueAsync(message, waitForPersistenceFlush: queue.IsDurable);
         if (!enqueued)
         {
             return Results.Ok(new { success = false, messageId = message.MessageId });

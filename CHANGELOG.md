@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+- Publisher confirm duravel para publish em filas duraveis e streams duraveis, aguardando flush/fsync antes do sucesso.
+- Replicacao de publish em cluster alinhada ao mesmo contrato de confirmacao duravel.
 - Persistencia de offsets de stream consumer/group para filas duraveis, com retomada apos restart do broker.
 - Teste de integracao cobrindo `StreamAck` com restart no mesmo `DataDirectory`.
+- Teste unitario cobrindo publisher confirm duravel com `BatchFlushMs` atrasado.
 
 ## 1.0.0-preview.2 - 2026-04-28
 
