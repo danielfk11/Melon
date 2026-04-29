@@ -200,6 +200,43 @@ public class TcpServerAndClientReliabilityTests
     }
 
     [Fact]
+    public async Task ExactlyOnceQueue_ShouldSuppressDuplicatePublish_AfterRestart()
+    {
+        var dataDir = Path.Combine(Path.GetTempPath(), "melonmq-tests", Guid.NewGuid().ToString("N"));
+        var queueName = "exactly-once-restart";
+        var messageId = Guid.NewGuid();
+
+        await using (var host = new TestBrokerHost(dataDir))
+        {
+            await host.StartAsync();
+
+            await using var conn = await MelonConnection.ConnectAsync($"melon://127.0.0.1:{host.TcpPort}");
+            await using var channel = await conn.CreateChannelAsync();
+            await channel.DeclareQueueAsync(queueName, durable: true, exactlyOnce: true);
+
+            await channel.PublishAsync(queueName, Encoding.UTF8.GetBytes("first"), persistent: true, messageId: messageId);
+
+            var message = await ConsumeSingleAsync(channel, queueName, TimeSpan.FromSeconds(4));
+            message.Should().NotBeNull();
+            await channel.AckAsync(message!.DeliveryTag);
+        }
+
+        await using (var restarted = new TestBrokerHost(dataDir))
+        {
+            await restarted.StartAsync();
+
+            await using var conn = await MelonConnection.ConnectAsync($"melon://127.0.0.1:{restarted.TcpPort}");
+            await using var channel = await conn.CreateChannelAsync();
+            await channel.DeclareQueueAsync(queueName, durable: true, exactlyOnce: true);
+
+            await channel.PublishAsync(queueName, Encoding.UTF8.GetBytes("duplicate"), persistent: true, messageId: messageId);
+
+            var replayed = await ConsumeSingleAsync(channel, queueName, TimeSpan.FromSeconds(1));
+            replayed.Should().BeNull("exactly-once queue should reject duplicate messageIds even after restart");
+        }
+    }
+
+    [Fact]
     public async Task ConnectAsync_ShouldFailFast_WhenBrokerIsUnavailable()
     {
         var unusedPort = GetUnusedPort();

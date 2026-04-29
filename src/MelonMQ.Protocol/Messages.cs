@@ -29,6 +29,7 @@ public class DeclareQueuePayload
 {
     public string Queue { get; set; } = string.Empty;
     public bool Durable { get; set; }
+    public bool ExactlyOnce { get; set; }
     public string? DeadLetterQueue { get; set; }
     public int? DefaultTtlMs { get; set; }
     /// <summary>"classic" (default) or "stream"</summary>

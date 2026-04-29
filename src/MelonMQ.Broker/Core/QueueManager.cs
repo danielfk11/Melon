@@ -54,7 +54,7 @@ public class QueueManager : IQueueManager, IDisposable
             throw new ArgumentException($"Queue name '{name}' contains invalid characters. Only alphanumeric, hyphens, underscores, and dots are allowed.");
     }
 
-    public MessageQueue DeclareQueue(string name, bool durable = false, string? deadLetterQueue = null, int? defaultTtlMs = null)
+    public MessageQueue DeclareQueue(string name, bool durable = false, string? deadLetterQueue = null, int? defaultTtlMs = null, bool exactlyOnce = false)
     {
         ValidateQueueName(name);
         if (deadLetterQueue != null) ValidateQueueName(deadLetterQueue);
@@ -71,6 +71,7 @@ public class QueueManager : IQueueManager, IDisposable
             {
                 Name = name,
                 Durable = durable,
+                ExactlyOnce = exactlyOnce,
                 DeadLetterQueue = deadLetterQueue,
                 DefaultTtlMs = defaultTtlMs
             };
@@ -227,14 +228,14 @@ public class QueueManager : IQueueManager, IDisposable
     /// when consuming from <paramref name="sourceQueue"/>.
     /// The group queue is auto-durable when the source queue is durable.
     /// </summary>
-    public MessageQueue DeclareGroupQueue(string sourceQueue, string groupName, bool durable)
+    public MessageQueue DeclareGroupQueue(string sourceQueue, string groupName, bool durable, bool exactlyOnce)
     {
         var groupQueueName = GetGroupQueueName(sourceQueue, groupName);
 
         // Internal group queue — bypass public name validation (colons are intentional separators)
         var queue = _queues.GetOrAdd(groupQueueName, _ =>
         {
-            var config = new QueueConfiguration { Name = groupQueueName, Durable = durable };
+            var config = new QueueConfiguration { Name = groupQueueName, Durable = durable, ExactlyOnce = exactlyOnce };
             return new MessageQueue(
                 config,
                 _dataDirectory,

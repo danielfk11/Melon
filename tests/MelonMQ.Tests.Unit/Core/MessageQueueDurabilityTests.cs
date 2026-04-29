@@ -63,6 +63,37 @@ public class MessageQueueDurabilityTests : IDisposable
     }
 
     [Fact]
+    public async Task ExactlyOnceQueue_ShouldRejectDuplicateMessageId_AfterAckAndRestart()
+    {
+        var config = new QueueConfiguration
+        {
+            Name = "durable-exactly-once",
+            Durable = true,
+            ExactlyOnce = true
+        };
+
+        var messageId = Guid.NewGuid();
+
+        using (var queue = CreateQueue(config))
+        {
+            var firstAccepted = await queue.EnqueueAsync(CreateMessage("payload", messageId), waitForPersistenceFlush: true);
+            firstAccepted.Should().BeTrue();
+
+            var delivery = await queue.DequeueAsync("conn-1", CancellationToken.None);
+            delivery.Should().NotBeNull();
+
+            var acked = await queue.AckAsync(delivery!.Value.DeliveryTag);
+            acked.Should().BeTrue();
+        }
+
+        using (var reloaded = CreateQueue(config))
+        {
+            var duplicateAccepted = await reloaded.EnqueueAsync(CreateMessage("payload-duplicate", messageId), waitForPersistenceFlush: true);
+            duplicateAccepted.Should().BeFalse("exactly-once queue should keep the messageId tombstone across restart");
+        }
+    }
+
+    [Fact]
     public async Task AckTombstone_ShouldStayConsistent_WhenBatchFlushIsDelayed()
     {
         var config = new QueueConfiguration
@@ -152,11 +183,11 @@ public class MessageQueueDurabilityTests : IDisposable
             batchFlushMs: batchFlushMs);
     }
 
-    private static QueueMessage CreateMessage(string payload)
+    private static QueueMessage CreateMessage(string payload, Guid? messageId = null)
     {
         return new QueueMessage
         {
-            MessageId = Guid.NewGuid(),
+            MessageId = messageId ?? Guid.NewGuid(),
             Body = Encoding.UTF8.GetBytes(payload),
             EnqueuedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Persistent = true

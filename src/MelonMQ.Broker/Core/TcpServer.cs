@@ -528,16 +528,18 @@ public class TcpServer
 
             var alreadyExisted = _queueManager.GetQueue(payload.Queue) != null;
             var queue = _queueManager.DeclareQueue(
-                payload.Queue, 
-                payload.Durable, 
-                payload.DeadLetterQueue, 
-                payload.DefaultTtlMs);
+                payload.Queue,
+                durable: payload.Durable,
+                deadLetterQueue: payload.DeadLetterQueue,
+                defaultTtlMs: payload.DefaultTtlMs,
+                exactlyOnce: payload.ExactlyOnce);
 
             if (!alreadyExisted && _clusterCoordinator?.Enabled == true)
             {
                 var replicated = await _clusterCoordinator.ReplicateDeclareQueueAsync(
                     payload.Queue,
                     payload.Durable,
+                    payload.ExactlyOnce,
                     payload.DeadLetterQueue,
                     payload.DefaultTtlMs);
 
@@ -672,17 +674,23 @@ public class TcpServer
             DeliveryCount = 0
         };
 
-        await queue.EnqueueAsync(
+        var enqueued = await queue.EnqueueAsync(
             message,
             cancellationToken,
             waitForPersistenceFlush: queue.IsDurable);
+
+        if (!enqueued && queue.IsExactlyOnce && queue.HasSeenMessageId(message.MessageId))
+        {
+            await SendPublishSuccess(connection, frame.CorrelationId, messageId, duplicate: true);
+            return;
+        }
 
         // Fan-out to consumer group queues
         foreach (var groupQueue in _queueManager.GetGroupQueues(payload.Queue))
         {
             var groupMessage = new QueueMessage
             {
-                MessageId = Guid.NewGuid(), // distinct ID per group copy
+                MessageId = message.MessageId,
                 Body = message.Body,
                 EnqueuedAt = message.EnqueuedAt,
                 ExpiresAt = message.ExpiresAt,
@@ -729,7 +737,7 @@ public class TcpServer
         if (streamQueue != null)
         {
             long? expiresAt = ttlMs.HasValue ? now + ttlMs.Value : null;
-            await streamQueue.AppendAsync(bodyBytes, Guid.NewGuid(), expiresAt);
+            await streamQueue.AppendAsync(bodyBytes, messageId, expiresAt);
             return;
         }
 
@@ -743,7 +751,7 @@ public class TcpServer
         var effectiveTtlMs = ttlMs ?? queue.DefaultTtlMs;
         var message = new QueueMessage
         {
-            MessageId = Guid.NewGuid(),
+            MessageId = messageId,
             Body = bodyBytes,
             EnqueuedAt = now,
             ExpiresAt = effectiveTtlMs.HasValue ? now + effectiveTtlMs.Value : null,
@@ -761,7 +769,7 @@ public class TcpServer
         {
             await groupQueue.EnqueueAsync(new QueueMessage
             {
-                MessageId = Guid.NewGuid(),
+                MessageId = message.MessageId,
                 Body = message.Body,
                 EnqueuedAt = message.EnqueuedAt,
                 ExpiresAt = message.ExpiresAt,
@@ -770,7 +778,7 @@ public class TcpServer
         }
     }
 
-    private async Task SendPublishSuccess(ClientConnection connection, ulong correlationId, Guid messageId)
+    private async Task SendPublishSuccess(ClientConnection connection, ulong correlationId, Guid messageId, bool duplicate = false)
     {
         try
         {
@@ -778,7 +786,7 @@ public class TcpServer
             {
                 Type = MessageType.Publish,
                 CorrelationId = correlationId,
-                Payload = new { success = true, messageId }
+                Payload = new { success = true, messageId, duplicate }
             });
         }
         catch (InvalidOperationException)
@@ -818,7 +826,7 @@ public class TcpServer
                 await SendError(connection, frame.CorrelationId, $"Queue '{payload.Queue}' does not exist");
                 return;
             }
-            var groupQueue = _queueManager.DeclareGroupQueue(payload.Queue, payload.Group, sourceQueue.IsDurable);
+            var groupQueue = _queueManager.DeclareGroupQueue(payload.Queue, payload.Group, sourceQueue.IsDurable, sourceQueue.IsExactlyOnce);
             actualQueueName = groupQueue.Name;
         }
         else

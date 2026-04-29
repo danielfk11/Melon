@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.0.0-preview.3 - 2026-04-28
 
+- Modo opcional `exactlyOnce` para filas classicas, com deduplicacao broker-side por `messageId`.
+- Tombstones de dedupe preservados em filas duraveis para manter o comportamento apos restart.
+- Teste de integracao cobrindo supressao de duplicate publish apos restart em fila `exactlyOnce`.
 - Persistencia de topologia de exchanges/bindings duraveis com reload no startup do broker.
 - Replicacao de declare/bind/unbind de exchanges no modelo de cluster atual.
 - Publisher confirm duravel para publish em filas duraveis e streams duraveis, aguardando flush/fsync antes do sucesso.

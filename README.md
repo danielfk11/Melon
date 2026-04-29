@@ -307,6 +307,7 @@ Declarar fila:
 {
   "name": "orders.created",
   "durable": true,
+  "exactlyOnce": true,
   "deadLetterQueue": "orders.created.dlq",
   "defaultTtlMs": 300000
 }
@@ -365,7 +366,7 @@ Frame:
 | Tipo | Direcao | Payload de entrada |
 |---|---|---|
 | AUTH | C->S | { username, password } |
-| DECLAREQUEUE | C->S | { queue, durable, deadLetterQueue, defaultTtlMs, mode, streamMaxLengthMessages, streamMaxAgeMs } |
+| DECLAREQUEUE | C->S | { queue, durable, exactlyOnce, deadLetterQueue, defaultTtlMs, mode, streamMaxLengthMessages, streamMaxAgeMs } |
 | PUBLISH | C->S | { queue, exchange, routingKey, bodyBase64, ttlMs, persistent, messageId } |
 | CONSUMESUBSCRIBE | C->S | { queue, group, offset } |
 | ACK | C->S | { deliveryTag } |
@@ -405,7 +406,7 @@ using MelonMQ.Client;
 using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
 using var channel = await connection.CreateChannelAsync();
 
-await channel.DeclareQueueAsync("orders.created", durable: true, dlq: "orders.created.dlq", defaultTtlMs: 300000);
+await channel.DeclareQueueAsync("orders.created", durable: true, dlq: "orders.created.dlq", defaultTtlMs: 300000, exactlyOnce: true);
 await channel.PublishAsync("orders.created", System.Text.Encoding.UTF8.GetBytes("hello"), persistent: true);
 
 await foreach (var msg in channel.ConsumeAsync("orders.created", prefetch: 50))
@@ -491,6 +492,16 @@ Se preferir autenticar explicitamente apos conectar, use:
 - O broker pode reentregar mensagens.
 - O consumidor deve ser idempotente (messageId no storage da aplicacao).
 
+### Exactly-once opcional em fila classica
+
+- Filas classicas podem ser declaradas com `exactlyOnce=true`.
+- Nesse modo, o broker deduplica publishes por `messageId` no escopo da fila.
+- Em filas duraveis, o estado de dedupe e persistido e sobrevive a restart.
+- Retries do mesmo publish com o mesmo `messageId` passam a ser idempotentes no broker.
+- O fan-out para consumer groups e o roteamento por exchange preservam o `messageId` original.
+- Esse modo reduz duplicidade no broker, mas nao faz transacao 2PC com banco/side effect externo do consumidor.
+- Se o handler aplica efeito externo antes do ACK e cai no meio, ainda e necessario idempotencia ou outbox/inbox no lado da aplicacao para cobertura end-to-end completa.
+
 ### Regras atuais relevantes
 
 - ACK/NACK so podem ser feitos pela mesma conexao que recebeu o delivery tag.
@@ -498,12 +509,14 @@ Se preferir autenticar explicitamente apos conectar, use:
 - HTTP consume faz auto-ack (nao ha ACK posterior no fluxo HTTP).
 - MaxDeliveryCount da fila classica e 5 (fixo no runtime atual) antes de encaminhar para DLQ.
 - TTL pode vir por mensagem (ttlMs) ou por default da fila (defaultTtlMs).
+- Publish duplicado em fila `exactlyOnce` e tratado como operacao idempotente pelo `messageId`.
 
 ### Durabilidade de fila classica
 
 - Publish para fila duravel so retorna sucesso apos o append log ser gravado e confirmado com flush/fsync.
 - ACK e PURGE usam persistencia critica com espera de flush.
 - Compactacao remove tombstones e expiradas acima de CompactionThresholdMB.
+- Em fila duravel com `exactlyOnce=true`, tombstones de `messageId` aceitos/ackados tambem sao preservados para manter a deduplicacao apos restart.
 
 ### Streams
 
@@ -578,9 +591,9 @@ Cobertura atual inclui unitarios e integracao para:
   O que resolve: escala horizontal de throughput de stream e distribuicao automatica de carga.
   Como configurar hoje (mitigacao): shard manual por multiplas filas/streams e distribuicao por naming/routing key.
 
-- [ ] Exactly-once transacional opcional (end-to-end)
-  O que resolve: elimina duplicidade sem depender totalmente de dedupe da aplicacao.
-  Como configurar hoje (mitigacao): manter padrao at-least-once + idempotencia por messageId no consumidor.
+- [ ] Coordenacao transacional end-to-end com efeitos externos
+  O que resolve: elimina duplicidade mesmo quando o handler precisa coordenar ACK com banco/HTTP/API externa.
+  Como configurar hoje (mitigacao): usar `exactlyOnce=true` no broker para dedupe por `messageId` e manter idempotencia/outbox-inbox na aplicacao consumidora.
 
 - [ ] SDKs oficiais adicionais e suite de conformidade de protocolo
   O que resolve: melhora interoperabilidade multi-linguagem com menor risco de divergencia de implementacao.

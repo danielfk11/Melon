@@ -19,6 +19,7 @@ public sealed record ClusterLeaveRequest(string NodeId);
 public sealed record ClusterDeclareQueueReplicationRequest(
     string Queue,
     bool Durable,
+    bool ExactlyOnce,
     string? DeadLetterQueue,
     int? DefaultTtlMs,
     string SourceNodeId,
@@ -342,6 +343,7 @@ public class ClusterCoordinator
     public async Task<bool> ReplicateDeclareQueueAsync(
         string queue,
         bool durable,
+        bool exactlyOnce,
         string? deadLetterQueue,
         int? defaultTtlMs,
         CancellationToken cancellationToken = default)
@@ -349,6 +351,7 @@ public class ClusterCoordinator
         var payload = new ClusterDeclareQueueReplicationRequest(
             queue,
             durable,
+            exactlyOnce,
             deadLetterQueue,
             defaultTtlMs,
             NodeId,

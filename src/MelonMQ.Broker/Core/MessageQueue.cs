@@ -19,6 +19,7 @@ public class MessageQueue : IDisposable
     private readonly ChannelReader<QueueMessage> _reader;
     private readonly ConcurrentDictionary<ulong, InFlightMessage> _inFlightMessages = new();
     private readonly ConcurrentDictionary<Guid, byte> _ackedMessageIds = new();
+    private readonly ConcurrentDictionary<Guid, byte> _knownMessageIds = new();
     private readonly string? _persistenceFilePath;
     private readonly ILogger<MessageQueue> _logger;
     private readonly Func<string, MessageQueue?>? _queueResolver;
@@ -90,6 +91,7 @@ public class MessageQueue : IDisposable
 
     public string Name => _config.Name;
     public bool IsDurable => _config.Durable;
+    public bool IsExactlyOnce => _config.ExactlyOnce;
     public int? DefaultTtlMs => _config.DefaultTtlMs;
     public int PendingCount => _pendingCount;
     public int InFlightCount => _inFlightMessages.Count;
@@ -106,7 +108,8 @@ public class MessageQueue : IDisposable
     public async Task<bool> EnqueueAsync(
         QueueMessage message,
         CancellationToken cancellationToken = default,
-        bool waitForPersistenceFlush = false)
+        bool waitForPersistenceFlush = false,
+        bool bypassExactlyOnce = false)
     {
         if (Volatile.Read(ref _disposed) == 1)
         {
@@ -134,18 +137,37 @@ public class MessageQueue : IDisposable
             return false;
         }
 
-        if (_config.Durable)
+        var trackKnownId = _config.ExactlyOnce && !bypassExactlyOnce;
+        if (trackKnownId && !_knownMessageIds.TryAdd(message.MessageId, 0))
         {
-            await QueuePersistenceRecordAsync(
-                CreateEnqueueRecord(message),
-                waitForFlush: waitForPersistenceFlush,
-                cancellationToken);
+            _logger.LogDebug("Message {MessageId} is already known to exactly-once queue {QueueName}", message.MessageId, _config.Name);
+            return false;
         }
 
-        await _writer.WriteAsync(message, cancellationToken);
-        Interlocked.Increment(ref _pendingCount);
-        TouchActivity();
-        return true;
+        try
+        {
+            if (_config.Durable)
+            {
+                await QueuePersistenceRecordAsync(
+                    CreateEnqueueRecord(message),
+                    waitForFlush: waitForPersistenceFlush,
+                    cancellationToken);
+            }
+
+            await _writer.WriteAsync(message, cancellationToken);
+            Interlocked.Increment(ref _pendingCount);
+            TouchActivity();
+            return true;
+        }
+        catch
+        {
+            if (trackKnownId)
+            {
+                _knownMessageIds.TryRemove(message.MessageId, out _);
+            }
+
+            throw;
+        }
     }
 
     public async Task<(QueueMessage Message, ulong DeliveryTag)?> DequeueAsync(string connectionId, CancellationToken cancellationToken = default)
@@ -248,6 +270,8 @@ public class MessageQueue : IDisposable
         return false;
     }
 
+    public bool HasSeenMessageId(Guid messageId) => _knownMessageIds.ContainsKey(messageId);
+
     public async Task<bool> NackAsync(ulong deliveryTag, bool requeue = true)
     {
         if (!_inFlightMessages.TryRemove(deliveryTag, out var inFlight))
@@ -270,7 +294,7 @@ public class MessageQueue : IDisposable
         {
             try
             {
-                await EnqueueAsync(inFlight.Message);
+                await EnqueueAsync(inFlight.Message, bypassExactlyOnce: true);
                 _logger.LogDebug("Requeued message {MessageId}", inFlight.Message.MessageId);
             }
             catch (Exception ex)
@@ -300,7 +324,7 @@ public class MessageQueue : IDisposable
             {
                 inFlight.Message.Redelivered = true;
                 inFlight.Message.DeliveryCount++;
-                await EnqueueAsync(inFlight.Message);
+                await EnqueueAsync(inFlight.Message, bypassExactlyOnce: true);
             }
         }
 
@@ -364,6 +388,12 @@ public class MessageQueue : IDisposable
             await AppendCriticalPersistenceRecordAsync(
                 CreatePurgeRecord(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
                 cancellationToken);
+        }
+
+        _ackedMessageIds.Clear();
+        if (_config.ExactlyOnce)
+        {
+            _knownMessageIds.Clear();
         }
 
         TouchActivity();
@@ -535,6 +565,7 @@ public class MessageQueue : IDisposable
                         removedCount += orderedMessages.Count;
                         orderedMessages.Clear();
                         _ackedMessageIds.Clear();
+                        _knownMessageIds.Clear();
                         continue;
                     }
 
@@ -547,6 +578,10 @@ public class MessageQueue : IDisposable
                     if (string.Equals(op, AckOperation, StringComparison.OrdinalIgnoreCase))
                     {
                         _ackedMessageIds[msgId] = 0;
+                        if (_config.ExactlyOnce)
+                        {
+                            _knownMessageIds[msgId] = 0;
+                        }
                         if (orderedMessages.Remove(msgId))
                         {
                             removedCount++;
@@ -585,6 +620,10 @@ public class MessageQueue : IDisposable
                         }
 
                         orderedMessages[msgId] = (message, sequence++);
+                        if (_config.ExactlyOnce)
+                        {
+                            _knownMessageIds[msgId] = 0;
+                        }
                     }
                     catch
                     {
@@ -600,6 +639,16 @@ public class MessageQueue : IDisposable
                 {
                     await writer.WriteLineAsync(CreateEnqueueRecord(entry.Message));
                     survivingCount++;
+                }
+
+                if (_config.ExactlyOnce)
+                {
+                    foreach (var messageId in _ackedMessageIds.Keys
+                                 .Where(messageId => !orderedMessages.ContainsKey(messageId))
+                                 .OrderBy(messageId => messageId))
+                    {
+                        await writer.WriteLineAsync(CreateAckRecord(messageId));
+                    }
                 }
             }
 
@@ -657,6 +706,7 @@ public class MessageQueue : IDisposable
                     {
                         orderedMessages.Clear();
                         _ackedMessageIds.Clear();
+                        _knownMessageIds.Clear();
                         continue;
                     }
 
@@ -668,6 +718,10 @@ public class MessageQueue : IDisposable
                     if (string.Equals(op, AckOperation, StringComparison.OrdinalIgnoreCase))
                     {
                         _ackedMessageIds[msgId] = 0;
+                        if (_config.ExactlyOnce)
+                        {
+                            _knownMessageIds[msgId] = 0;
+                        }
                         orderedMessages.Remove(msgId);
                         continue;
                     }
@@ -694,6 +748,10 @@ public class MessageQueue : IDisposable
                     };
 
                     orderedMessages[msgId] = (message, sequence++);
+                    if (_config.ExactlyOnce)
+                    {
+                        _knownMessageIds[msgId] = 0;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -871,7 +929,7 @@ public class MessageQueue : IDisposable
             {
                 inFlight.Message.Redelivered = true;
                 inFlight.Message.DeliveryCount++;
-                await EnqueueAsync(inFlight.Message);
+                await EnqueueAsync(inFlight.Message, bypassExactlyOnce: true);
 
                 _logger.LogDebug("Requeued expired in-flight message {MessageId}",
                     inFlight.Message.MessageId);

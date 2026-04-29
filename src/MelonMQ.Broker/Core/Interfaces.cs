@@ -2,7 +2,7 @@ namespace MelonMQ.Broker.Core;
 
 public interface IQueueManager
 {
-    MessageQueue DeclareQueue(string name, bool durable = false, string? deadLetterQueue = null, int? defaultTtlMs = null);
+    MessageQueue DeclareQueue(string name, bool durable = false, string? deadLetterQueue = null, int? defaultTtlMs = null, bool exactlyOnce = false);
     MessageQueue? GetQueue(string name);
     IEnumerable<MessageQueue> GetAllQueues();
     bool DeleteQueue(string name);

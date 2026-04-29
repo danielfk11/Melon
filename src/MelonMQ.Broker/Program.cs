@@ -221,7 +221,12 @@ app.MapPost("/cluster/replicate/declare", (ClusterDeclareQueueReplicationRequest
     if (!clusterCoordinator.ValidateClusterRequest(context))
         return Results.Unauthorized();
 
-    queueManager.DeclareQueue(request.Queue, request.Durable, request.DeadLetterQueue, request.DefaultTtlMs);
+    queueManager.DeclareQueue(
+        request.Queue,
+        durable: request.Durable,
+        deadLetterQueue: request.DeadLetterQueue,
+        defaultTtlMs: request.DefaultTtlMs,
+        exactlyOnce: request.ExactlyOnce);
     return Results.Ok(new { success = true });
 });
 
@@ -387,16 +392,18 @@ app.MapPost("/queues/declare", async (QueueDeclareRequest request, QueueManager 
     {
         var alreadyExisted = queueManager.GetQueue(request.Name) != null;
         queueManager.DeclareQueue(
-            request.Name, 
-            request.Durable, 
-            request.DeadLetterQueue, 
-            request.DefaultTtlMs);
+            request.Name,
+            durable: request.Durable,
+            deadLetterQueue: request.DeadLetterQueue,
+            defaultTtlMs: request.DefaultTtlMs,
+            exactlyOnce: request.ExactlyOnce);
 
         if (!alreadyExisted && clusterCoordinator.Enabled)
         {
             var replicated = await clusterCoordinator.ReplicateDeclareQueueAsync(
                 request.Name,
                 request.Durable,
+                request.ExactlyOnce,
                 request.DeadLetterQueue,
                 request.DefaultTtlMs);
 
@@ -493,6 +500,11 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
         var enqueued = await queue.EnqueueAsync(message, waitForPersistenceFlush: queue.IsDurable);
         if (!enqueued)
         {
+            if (queue.IsExactlyOnce && queue.HasSeenMessageId(message.MessageId))
+            {
+                return Results.Ok(new { success = true, duplicate = true, messageId = message.MessageId });
+            }
+
             return Results.Ok(new { success = false, messageId = message.MessageId });
         }
 
@@ -746,6 +758,7 @@ app.Run();
 public record QueueDeclareRequest(
     string Name, 
     bool Durable = false, 
+    bool ExactlyOnce = false,
     string? DeadLetterQueue = null, 
     int? DefaultTtlMs = null);
 

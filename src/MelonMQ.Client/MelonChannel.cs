@@ -15,12 +15,19 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         _connection = connection;
     }
 
-    public async Task DeclareQueueAsync(string name, bool durable = false, string? dlq = null, int? defaultTtlMs = null, CancellationToken cancellationToken = default)
+    public async Task DeclareQueueAsync(
+        string name,
+        bool durable = false,
+        string? dlq = null,
+        int? defaultTtlMs = null,
+        bool exactlyOnce = false,
+        CancellationToken cancellationToken = default)
     {
         var payload = new
         {
             queue = name,
             durable = durable,
+            exactlyOnce = exactlyOnce,
             deadLetterQueue = dlq,
             defaultTtlMs = defaultTtlMs
         };
