@@ -92,7 +92,9 @@ public class MessageQueue : IDisposable
     public string Name => _config.Name;
     public bool IsDurable => _config.Durable;
     public bool IsExactlyOnce => _config.ExactlyOnce;
+    public string? DeadLetterQueue => _config.DeadLetterQueue;
     public int? DefaultTtlMs => _config.DefaultTtlMs;
+    public int MaxDeliveryCount => _config.MaxDeliveryCount;
     public int PendingCount => _pendingCount;
     public int InFlightCount => _inFlightMessages.Count;
     public long LastActivityAt => _lastActivityAt;

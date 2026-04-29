@@ -157,6 +157,29 @@
             flex-wrap: wrap;
         }
 
+        .hero-meta {
+            display:flex;
+            gap:.45rem;
+            flex-wrap:wrap;
+            margin-top:.8rem;
+        }
+
+        .info-chip {
+            display:inline-flex;
+            align-items:center;
+            gap:.38rem;
+            padding:.36rem .68rem;
+            border-radius:9999px;
+            font-size:.73rem;
+            font-weight:600;
+            border:1px solid var(--border);
+            background:rgba(255,255,255,.7);
+        }
+
+        .info-chip.good { color:var(--green); border-color:rgba(4, 120, 87, .25); background:rgba(4, 120, 87, .08); }
+        .info-chip.warn { color:var(--orange); border-color:rgba(180, 83, 9, .25); background:rgba(180, 83, 9, .08); }
+        .info-chip.info { color:var(--blue); border-color:rgba(29, 78, 216, .22); background:rgba(29, 78, 216, .08); }
+
         .metrics-row {
             display:grid;
             grid-template-columns: repeat(auto-fit, minmax(180px,1fr));
@@ -456,6 +479,57 @@
             line-height: 1.4;
         }
 
+        .section-grid {
+            display:grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+        }
+
+        .config-card {
+            border:1px solid var(--border);
+            background:#fff;
+            border-radius:14px;
+            padding:.95rem 1rem;
+        }
+
+        .config-card h3 {
+            font-size:.86rem;
+            font-family:'Space Grotesk', sans-serif;
+            margin-bottom:.55rem;
+        }
+
+        .config-list {
+            display:grid;
+            grid-template-columns:auto 1fr;
+            gap:.38rem .8rem;
+            font-size:.79rem;
+        }
+
+        .config-list dt { color:var(--text-dim); }
+        .config-list dd { font-weight:600; word-break:break-word; }
+
+        .table-main {
+            display:block;
+            font-weight:700;
+        }
+
+        .table-sub {
+            display:block;
+            color:var(--text-dim);
+            font-size:.72rem;
+            margin-top:.16rem;
+        }
+
+        .badge.exactly-once { background:rgba(29, 78, 216, .12); color:var(--blue); }
+        .badge.atleast-once { background:rgba(15, 118, 110, .12); color:var(--accent); }
+        .badge.neutral { background:rgba(107, 114, 128, .11); color:var(--text-dim); }
+
+        .stack-badges {
+            display:flex;
+            gap:.35rem;
+            flex-wrap:wrap;
+        }
+
         .sparkline-row { display:flex; gap:3px; align-items:end; height:36px; }
         .spark-bar {
             flex:1;
@@ -489,6 +563,7 @@
 
         @media(max-width: 1024px) {
             .hint-grid { grid-template-columns: 1fr; }
+            .section-grid { grid-template-columns: 1fr; }
         }
 
         @media(max-width:768px) {
@@ -500,6 +575,7 @@
             .grid-2 { grid-template-columns:1fr; }
             .api-key-input { width: 100%; }
             .hero { flex-direction: column; align-items: flex-start; }
+            .hero-meta { width:100%; }
         }
     </style>
 </head>
@@ -534,6 +610,14 @@
             <div>
                 <div class="hero-title">Painel Operacional MelonMQ</div>
                 <div class="hero-sub">Esta UI consome <strong>/stats</strong> e <strong>/health</strong> a cada 5s. Para Prometheus, use <strong>/metrics</strong>.</div>
+                <div class="hero-meta">
+                    <span class="info-chip info">Env: {{ config?.environment?.name || 'unknown' }}</span>
+                    <span class="info-chip" :class="config?.security?.requireAuth ? 'good' : 'warn'">Auth {{ config?.security?.requireAuth ? 'on' : 'off' }}</span>
+                    <span class="info-chip" :class="config?.security?.tcpTls?.enabled ? 'good' : 'warn'">TLS {{ config?.security?.tcpTls?.enabled ? 'on' : 'off' }}</span>
+                    <span class="info-chip" :class="config?.security?.requireAdminApiKey ? 'good' : 'warn'">Admin API {{ config?.security?.requireAdminApiKey ? 'required' : 'open' }}</span>
+                    <span class="info-chip" :class="clusterStatus?.enabled ? 'info' : 'warn'">Cluster {{ clusterStatus?.enabled ? (clusterStatus.consistency + ' · ' + clusterStatus.activeNodes + '/' + clusterStatus.expectedNodes) : 'single-node' }}</span>
+                    <span class="info-chip" :class="config?.observability?.prometheus?.enabled ? 'good' : 'warn'">Metrics {{ config?.observability?.prometheus?.enabled ? (config.observability.prometheus.endpointPath || '/metrics') : 'off' }}</span>
+                </div>
             </div>
             <div class="hero-actions">
                 <button class="btn btn-accent" @click="refresh">Atualizar agora</button>
@@ -597,12 +681,30 @@
                 <span class="metric-value">{{ metricCounter('errors.total') }}</span>
                 <span class="metric-sub">Falhas acumuladas de processamento</span>
             </div>
+            <div class="metric-card">
+                <div class="icon m">🧱</div>
+                <span class="metric-label">Durable Queues</span>
+                <span class="metric-value">{{ durableQueueCount }}</span>
+                <span class="metric-sub">Filas com persistência local</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon rate">🧬</div>
+                <span class="metric-label">Exactly Once</span>
+                <span class="metric-value">{{ exactlyOnceQueueCount }}</span>
+                <span class="metric-sub">Filas com dedupe por messageId</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon c">🛰</div>
+                <span class="metric-label">Cluster Nodes</span>
+                <span class="metric-value">{{ clusterStatus?.activeNodes ?? 1 }}</span>
+                <span class="metric-sub">Nós ativos / esperados: {{ clusterStatus ? (clusterStatus.activeNodes + '/' + clusterStatus.expectedNodes) : '1/1' }}</span>
+            </div>
         </div>
 
         <!-- Tabs -->
         <div class="tabs">
             <button class="tab" :class="{active: tab==='queues'}" @click="tab='queues'">Queues</button>
-            <button class="tab" :class="{active: tab==='metrics'}" @click="tab='metrics'">Metrics</button>
+            <button class="tab" :class="{active: tab==='metrics'}" @click="tab='metrics'">Metrics &amp; Config</button>
             <button class="tab" :class="{active: tab==='gc'}" @click="tab='gc'; fetchGcStatus()">GC &amp; Maintenance</button>
             <button class="tab" :class="{active: tab==='publish'}" @click="tab='publish'">Quick Publish</button>
         </div>
@@ -628,6 +730,13 @@
                                 <option :value="false">No</option>
                             </select>
                         </div>
+                        <div class="form-group" style="max-width:140px;">
+                            <label>Exactly Once</label>
+                            <select v-model="newQueue.exactlyOnce">
+                                <option :value="false">No</option>
+                                <option :value="true">Yes</option>
+                            </select>
+                        </div>
                         <div class="form-group">
                             <label>Dead Letter Queue</label>
                             <input v-model="newQueue.dlq" placeholder="optional">
@@ -640,6 +749,9 @@
                             <label>&nbsp;</label>
                             <button class="btn btn-accent" @click="createQueue">Create</button>
                         </div>
+                    </div>
+                    <div class="table-sub" style="margin-top:.75rem;">
+                        `exactlyOnce` faz dedupe broker-side por `messageId`. Para sobreviver restart, use fila durable.
                     </div>
                     <transition name="fade">
                         <div v-if="toast" class="toast" :class="toast.type" style="margin-top:1rem;">
@@ -665,26 +777,40 @@
                         <thead>
                             <tr>
                                 <th>Name</th>
-                                <th>Type</th>
+                                <th>Flags</th>
                                 <th>Pending</th>
                                 <th>In-Flight</th>
-                                <th>Volume</th>
-                                <th>Idle</th>
+                                <th>TTL</th>
+                                <th>DLQ</th>
+                                <th>Last Activity</th>
                                 <th style="text-align:right;">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr v-for="q in sortedQueues" :key="q.name">
-                                <td><strong class="mono">{{ q.name }}</strong></td>
-                                <td><span class="badge" :class="q.durable?'durable':'transient'">{{ q.durable ? '● Durable' : '○ Transient' }}</span></td>
-                                <td class="mono">{{ q.pendingMessages.toLocaleString() }}</td>
-                                <td class="mono">{{ q.inFlightMessages.toLocaleString() }}</td>
-                                <td style="min-width:90px;">
-                                    <div class="bar-wrap">
-                                        <div class="bar-fill green" :style="{ width: barPercent(q.pendingMessages + q.inFlightMessages) + '%' }"></div>
+                                <td>
+                                    <span class="table-main mono">{{ q.name }}</span>
+                                    <span class="table-sub">Criada {{ formatRelativeFromUnix(q.createdAtUnixMs) }}</span>
+                                </td>
+                                <td>
+                                    <div class="stack-badges">
+                                        <span class="badge" :class="q.durable?'durable':'transient'">{{ q.durable ? 'Durable' : 'Transient' }}</span>
+                                        <span class="badge" :class="q.exactlyOnce ? 'exactly-once' : 'atleast-once'">{{ q.exactlyOnce ? 'Exactly once' : 'At-least-once' }}</span>
                                     </div>
                                 </td>
-                                <td class="idle-text">{{ formatIdle(q.idleTimeMs) }}</td>
+                                <td class="mono">{{ q.pendingMessages.toLocaleString() }}</td>
+                                <td class="mono">{{ q.inFlightMessages.toLocaleString() }}</td>
+                                <td>
+                                    <span class="table-main mono">{{ formatTtl(q.defaultTtlMs) }}</span>
+                                    <span class="table-sub">Max retry {{ q.maxDeliveryCount }}</span>
+                                </td>
+                                <td>
+                                    <span class="table-main mono">{{ q.deadLetterQueue || '—' }}</span>
+                                </td>
+                                <td>
+                                    <span class="table-main">{{ formatRelativeFromUnix(q.lastActivityAtUnixMs) }}</span>
+                                    <span class="table-sub">Idle {{ formatIdle(q.idleTimeMs) }}</span>
+                                </td>
                                 <td style="text-align:right; white-space:nowrap;">
                                     <button class="btn btn-sm btn-red" @click="purgeQueue(q.name)">Purge</button>
                                     <button class="btn btn-sm btn-red" style="margin-left:.3rem;" @click="deleteQueue(q.name)">Delete</button>
@@ -702,6 +828,113 @@
 
         <!-- TAB: METRICS -->
         <div v-show="tab==='metrics'">
+            <div class="grid-2" style="margin-bottom:1.4rem;">
+                <div class="panel">
+                    <div class="panel-header"><h2>🧭 Runtime Configuration</h2></div>
+                    <div class="panel-body">
+                        <div class="section-grid">
+                            <div class="config-card">
+                                <h3>Network</h3>
+                                <dl class="config-list">
+                                    <dt>TCP</dt><dd>{{ config?.network?.tcpBindAddress || '—' }}:{{ config?.network?.tcpPort ?? '—' }}</dd>
+                                    <dt>HTTP</dt><dd>{{ config?.network?.httpPort ?? '—' }}</dd>
+                                    <dt>Heartbeat</dt><dd>{{ formatTtl(config?.network?.heartbeatIntervalMs) }}</dd>
+                                    <dt>Conn timeout</dt><dd>{{ formatTtl(config?.network?.connectionTimeoutMs) }}</dd>
+                                    <dt>Max connections</dt><dd>{{ formatNumber(config?.network?.maxConnections) }}</dd>
+                                    <dt>Max message</dt><dd>{{ formatBytes(config?.network?.maxMessageSizeBytes) }}</dd>
+                                    <dt>Channel capacity</dt><dd>{{ formatNumber(config?.network?.channelCapacity) }}</dd>
+                                </dl>
+                            </div>
+                            <div class="config-card">
+                                <h3>Security</h3>
+                                <dl class="config-list">
+                                    <dt>Require auth</dt><dd>{{ formatEnabled(config?.security?.requireAuth) }}</dd>
+                                    <dt>Users configured</dt><dd>{{ formatNumber(config?.security?.usersConfigured) }}</dd>
+                                    <dt>Hashed passwords</dt><dd>{{ formatEnabled(config?.security?.requireHashedPasswords) }}</dd>
+                                    <dt>Admin API key</dt><dd>{{ formatEnabled(config?.security?.requireAdminApiKey) }}</dd>
+                                    <dt>Read protection</dt><dd>{{ formatEnabled(config?.security?.protectReadEndpoints) }}</dd>
+                                    <dt>TLS</dt><dd>{{ formatEnabled(config?.security?.tcpTls?.enabled) }}</dd>
+                                    <dt>Client cert</dt><dd>{{ formatEnabled(config?.security?.tcpTls?.clientCertificateRequired) }}</dd>
+                                </dl>
+                            </div>
+                            <div class="config-card">
+                                <h3>Durability &amp; Limits</h3>
+                                <dl class="config-list">
+                                    <dt>Data dir</dt><dd class="mono">{{ config?.durability?.dataDirectory || '—' }}</dd>
+                                    <dt>Batch flush</dt><dd>{{ formatTtl(config?.durability?.batchFlushMs) }}</dd>
+                                    <dt>Compaction</dt><dd>{{ config?.durability?.compactionThresholdMb != null ? config.durability.compactionThresholdMb + ' MB' : '—' }}</dd>
+                                    <dt>Queue GC</dt><dd>{{ formatEnabled(config?.queueGc?.enabled) }}</dd>
+                                    <dt>GC interval</dt><dd>{{ config?.queueGc?.intervalSeconds != null ? config.queueGc.intervalSeconds + 's' : '—' }}</dd>
+                                    <dt>Idle threshold</dt><dd>{{ config?.queueGc?.inactiveThresholdSeconds != null ? config.queueGc.inactiveThresholdSeconds + 's' : '—' }}</dd>
+                                    <dt>Max queues</dt><dd>{{ formatMaxQueues(config?.queueGc?.maxQueues) }}</dd>
+                                </dl>
+                            </div>
+                            <div class="config-card">
+                                <h3>Observability</h3>
+                                <dl class="config-list">
+                                    <dt>Service</dt><dd>{{ config?.observability?.serviceName || '—' }}</dd>
+                                    <dt>Version</dt><dd>{{ config?.observability?.serviceVersion || '—' }}</dd>
+                                    <dt>Prometheus</dt><dd>{{ formatEnabled(config?.observability?.prometheus?.enabled) }}</dd>
+                                    <dt>Metrics path</dt><dd class="mono">{{ config?.observability?.prometheus?.endpointPath || '—' }}</dd>
+                                    <dt>OTLP</dt><dd>{{ formatEnabled(config?.observability?.otlp?.enabled) }}</dd>
+                                    <dt>Protocol</dt><dd>{{ config?.observability?.otlp?.protocol || '—' }}</dd>
+                                    <dt>OTLP metrics</dt><dd>{{ formatEnabled(config?.observability?.otlp?.enableMetrics) }}</dd>
+                                    <dt>OTLP traces</dt><dd>{{ formatEnabled(config?.observability?.otlp?.enableTraces) }}</dd>
+                                </dl>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header"><h2>🩺 Health &amp; Cluster</h2></div>
+                    <div class="panel-body">
+                        <div class="section-grid">
+                            <div class="config-card">
+                                <h3>Health Snapshot</h3>
+                                <dl class="config-list">
+                                    <dt>Status</dt><dd>{{ health?.status || 'unknown' }}</dd>
+                                    <dt>TCP</dt><dd>{{ health?.tcpServer || 'unknown' }}</dd>
+                                    <dt>Connections</dt><dd>{{ formatNumber(stats?.connections) }}</dd>
+                                    <dt>Uptime</dt><dd>{{ stats?.uptime ? formatUptime(stats.uptime) : '—' }}</dd>
+                                    <dt>Last stats</dt><dd>{{ formatRelative(lastStatsAt) }}</dd>
+                                    <dt>Snapshot</dt><dd>{{ stats ? 'loaded' : 'waiting' }}</dd>
+                                </dl>
+                            </div>
+                            <div class="config-card">
+                                <h3>Cluster Settings</h3>
+                                <dl class="config-list">
+                                    <dt>Enabled</dt><dd>{{ formatEnabled(config?.clusterSettings?.enabled) }}</dd>
+                                    <dt>Node ID</dt><dd class="mono">{{ config?.clusterSettings?.nodeId || '—' }}</dd>
+                                    <dt>Address</dt><dd class="mono">{{ config?.clusterSettings?.nodeAddress || '—' }}</dd>
+                                    <dt>Consistency</dt><dd>{{ config?.clusterSettings?.consistency || '—' }}</dd>
+                                    <dt>Replication</dt><dd>{{ formatEnabled(config?.clusterSettings?.enableReplication) }}</dd>
+                                    <dt>Require quorum</dt><dd>{{ formatEnabled(config?.clusterSettings?.requireQuorumForWrites) }}</dd>
+                                    <dt>Seed nodes</dt><dd>{{ config?.clusterSettings?.seedNodes?.length ?? 0 }}</dd>
+                                </dl>
+                            </div>
+                        </div>
+
+                        <div class="panel" style="margin-top:1rem; margin-bottom:0; box-shadow:none;">
+                            <div class="panel-header"><h2>Cluster Nodes</h2></div>
+                            <div class="panel-body" style="padding:0;">
+                                <table class="tbl" v-if="clusterNodes.length">
+                                    <thead><tr><th>Node</th><th>Address</th><th>Last Seen</th></tr></thead>
+                                    <tbody>
+                                        <tr v-for="node in clusterNodes" :key="node.nodeId + node.nodeAddress">
+                                            <td class="mono">{{ node.nodeId }}</td>
+                                            <td class="mono">{{ node.nodeAddress }}</td>
+                                            <td>{{ formatRelativeFromUnix(node.lastSeenUnixMs) }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <div v-else class="empty-state" style="padding:1.2rem;">Sem nós remotos ativos</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="panel">
                 <div class="panel-header"><h2>🔎 Como ler as métricas</h2></div>
                 <div class="panel-body">
@@ -893,10 +1126,17 @@
                             <label>TTL (ms)</label>
                             <input v-model.number="pub.ttl" type="number" placeholder="—">
                         </div>
+                        <div class="form-group">
+                            <label>MessageId</label>
+                            <input v-model="pub.messageId" placeholder="optional GUID for dedupe test">
+                        </div>
                     </div>
                     <div class="form-group" style="margin-top:1rem;">
                         <label>Message Body</label>
                         <textarea v-model="pub.body" rows="4" class="publish-body" style="resize:vertical;font-family:inherit;" placeholder='{"hello": "world"}'></textarea>
+                    </div>
+                    <div class="table-sub" style="margin-top:.8rem;">
+                        Para validar fila `exactlyOnce`, publique novamente com o mesmo `messageId` e observe se a resposta volta como duplicada.
                     </div>
                     <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;">
                         <button class="btn btn-accent" @click="publishMessage">Publish</button>
@@ -946,8 +1186,8 @@ createApp({
             fetchError: null,
             toast: null,
             adminApiKey: '',
-            newQueue: { name:'', durable:true, dlq:'', ttl:null },
-            pub: { queue:'', body:'', persistent:false, ttl:null },
+            newQueue: { name:'', durable:true, exactlyOnce:false, dlq:'', ttl:null },
+            pub: { queue:'', body:'', persistent:false, ttl:null, messageId:'' },
             pubResult: null,
             peek: { queue:'', result:null },
             publishHistory: [],
@@ -980,8 +1220,23 @@ createApp({
         userQueueCount() {
             return this.userQueues.length;
         },
+        durableQueueCount() {
+            return this.userQueues.filter(q => q.durable).length;
+        },
+        exactlyOnceQueueCount() {
+            return this.userQueues.filter(q => q.exactlyOnce).length;
+        },
         sortedQueues() {
             return [...(this.stats?.queues || [])].sort((a,b) => a.name.localeCompare(b.name));
+        },
+        config() {
+            return this.stats?.config || null;
+        },
+        clusterStatus() {
+            return this.stats?.cluster || this.health?.cluster || null;
+        },
+        clusterNodes() {
+            return this.clusterStatus?.nodes || [];
         },
         counters() {
             const m = this.stats?.metrics || {};
@@ -1075,6 +1330,42 @@ createApp({
             if (s < 3600) return (s/60).toFixed(1) + 'm';
             return (s/3600).toFixed(1) + 'h';
         },
+        formatRelativeFromUnix(unixMs) {
+            if (unixMs == null) return '—';
+            return this.formatRelative(Number(unixMs));
+        },
+        formatEnabled(value) {
+            return value ? 'enabled' : 'disabled';
+        },
+        formatNumber(value) {
+            if (value == null || value === '') return '—';
+            return Number(value).toLocaleString();
+        },
+        formatTtl(value) {
+            if (value == null) return 'none';
+            if (value < 1000) return `${value}ms`;
+            const seconds = value / 1000;
+            if (seconds < 60) return `${seconds.toFixed(seconds % 1 === 0 ? 0 : 1)}s`;
+            const minutes = seconds / 60;
+            if (minutes < 60) return `${minutes.toFixed(minutes % 1 === 0 ? 0 : 1)}m`;
+            const hours = minutes / 60;
+            return `${hours.toFixed(hours % 1 === 0 ? 0 : 1)}h`;
+        },
+        formatBytes(value) {
+            if (value == null) return '—';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = Number(value);
+            let unitIndex = 0;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex += 1;
+            }
+            return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+        },
+        formatMaxQueues(value) {
+            if (value == null) return '—';
+            return Number(value) === 0 ? 'unlimited' : Number(value).toLocaleString();
+        },
         barPercent(v) {
             const max = Math.max(...(this.stats?.queues||[]).map(q => q.pendingMessages + q.inFlightMessages), 1);
             return Math.min(100, (v / max) * 100);
@@ -1118,7 +1409,9 @@ createApp({
                 this.publishHistory.push(delta);
                 if (this.publishHistory.length > 60) this.publishHistory.shift();
             } catch(e) {
-                this.fetchError = 'Failed to load stats';
+                this.fetchError = e.response?.status === 401
+                    ? 'Unauthorized: informe o X-Api-Key para liberar leitura.'
+                    : 'Failed to load stats';
             } finally {
                 this.loading = false;
             }
@@ -1146,6 +1439,7 @@ createApp({
                 delete axios.defaults.headers.common['X-Api-Key'];
                 localStorage.removeItem('melon.adminApiKey');
             }
+            this.refresh();
         },
         async createQueue() {
             const n = this.newQueue.name.trim();
@@ -1154,11 +1448,12 @@ createApp({
                 await axios.post('/queues/declare', {
                     name: n,
                     durable: this.newQueue.durable,
+                    exactlyOnce: this.newQueue.exactlyOnce,
                     deadLetterQueue: this.newQueue.dlq.trim() || null,
                     defaultTtlMs: this.newQueue.ttl || null
                 });
                 this.showToast('success', `Queue '${n}' created`);
-                this.newQueue = { name:'', durable:true, dlq:'', ttl:null };
+                this.newQueue = { name:'', durable:true, exactlyOnce:false, dlq:'', ttl:null };
                 await this.fetchStats();
             } catch(e) {
                 this.showToast('error', e.response?.data?.error || 'Failed to create queue');
@@ -1202,8 +1497,9 @@ createApp({
                     message: this.pub.body,
                     persistent: this.pub.persistent,
                     ttlMs: this.pub.ttl || null,
+                    messageId: this.pub.messageId.trim() || null,
                 })).data;
-                this.pubResult = { ok:true, text: `Published (${r.messageId})` };
+                this.pubResult = { ok:true, text: r.duplicate ? `Duplicate suppressed (${r.messageId})` : `Published (${r.messageId})` };
                 setTimeout(() => this.pubResult = null, 4000);
                 await this.fetchStats();
             } catch(e) {

@@ -344,15 +344,21 @@ app.MapGet("/queues", (QueueManager queueManager, HttpContext context) =>
     {
         name = q.Name,
         durable = q.IsDurable,
+        exactlyOnce = q.IsExactlyOnce,
+        deadLetterQueue = q.DeadLetterQueue,
+        defaultTtlMs = q.DefaultTtlMs,
+        maxDeliveryCount = q.MaxDeliveryCount,
         pendingMessages = q.PendingCount,
         inFlightMessages = q.InFlightCount,
-        idleTimeMs = q.IdleTimeMs
+        idleTimeMs = q.IdleTimeMs,
+        createdAtUnixMs = q.CreatedAt,
+        lastActivityAtUnixMs = q.LastActivityAt
     });
 
     return Results.Ok(new { queues = queues });
 });
 
-app.MapGet("/stats", (HttpContext context, QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics, ClusterCoordinator clusterCoordinator) =>
+app.MapGet("/stats", (HttpContext context, QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics, ClusterCoordinator clusterCoordinator, MelonMQConfiguration melonConfig, IWebHostEnvironment environment) =>
 {
     if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
         return Results.Unauthorized();
@@ -361,9 +367,15 @@ app.MapGet("/stats", (HttpContext context, QueueManager queueManager, Connection
     {
         name = q.Name,
         durable = q.IsDurable,
+        exactlyOnce = q.IsExactlyOnce,
+        deadLetterQueue = q.DeadLetterQueue,
+        defaultTtlMs = q.DefaultTtlMs,
+        maxDeliveryCount = q.MaxDeliveryCount,
         pendingMessages = q.PendingCount,
         inFlightMessages = q.InFlightCount,
-        idleTimeMs = q.IdleTimeMs
+        idleTimeMs = q.IdleTimeMs,
+        createdAtUnixMs = q.CreatedAt,
+        lastActivityAtUnixMs = q.LastActivityAt
     });
 
     var allMetrics = metrics.GetAllMetrics();
@@ -375,6 +387,92 @@ app.MapGet("/stats", (HttpContext context, QueueManager queueManager, Connection
         totalQueues = queueManager.QueueCount,
         metrics = allMetrics,
         cluster = clusterCoordinator.GetStatus(),
+        config = new
+        {
+            environment = new
+            {
+                name = environment.EnvironmentName,
+                isDevelopment = environment.IsDevelopment(),
+                isStaging = environment.IsStaging(),
+                isProduction = environment.IsProduction()
+            },
+            network = new
+            {
+                tcpPort = melonConfig.TcpPort,
+                tcpBindAddress = melonConfig.TcpBindAddress,
+                httpPort = melonConfig.HttpPort,
+                connectionTimeoutMs = melonConfig.ConnectionTimeout,
+                heartbeatIntervalMs = melonConfig.HeartbeatInterval,
+                maxConnections = melonConfig.MaxConnections,
+                maxMessageSizeBytes = melonConfig.MaxMessageSize,
+                channelCapacity = melonConfig.ChannelCapacity
+            },
+            durability = new
+            {
+                dataDirectory = melonConfig.DataDirectory,
+                batchFlushMs = melonConfig.BatchFlushMs,
+                compactionThresholdMb = melonConfig.CompactionThresholdMB
+            },
+            security = new
+            {
+                requireAuth = melonConfig.Security.RequireAuth,
+                usersConfigured = melonConfig.Security.Users.Count,
+                requireHashedPasswords = melonConfig.Security.RequireHashedPasswords,
+                requireAdminApiKey = melonConfig.Security.RequireAdminApiKey,
+                protectReadEndpoints = melonConfig.Security.ProtectReadEndpoints,
+                adminApiKeyConfigured = melonConfig.Security.HasAdminApiKey,
+                allowedOrigins = melonConfig.Security.AllowedOrigins,
+                tcpTls = new
+                {
+                    enabled = melonConfig.TcpTls.Enabled,
+                    certificateConfigured = !string.IsNullOrWhiteSpace(melonConfig.TcpTls.CertificatePath),
+                    clientCertificateRequired = melonConfig.TcpTls.ClientCertificateRequired,
+                    checkCertificateRevocation = melonConfig.TcpTls.CheckCertificateRevocation
+                }
+            },
+            observability = new
+            {
+                serviceName = melonConfig.Observability.ServiceName,
+                serviceVersion = melonConfig.Observability.ServiceVersion,
+                prometheus = new
+                {
+                    enabled = melonConfig.Observability.Prometheus.Enabled,
+                    endpointPath = melonConfig.Observability.Prometheus.EndpointPath,
+                    requireAdminApiKey = melonConfig.Observability.Prometheus.RequireAdminApiKey
+                },
+                otlp = new
+                {
+                    enabled = melonConfig.Observability.Otlp.Enabled,
+                    endpointConfigured = !string.IsNullOrWhiteSpace(melonConfig.Observability.Otlp.Endpoint),
+                    protocol = melonConfig.Observability.Otlp.Protocol,
+                    enableMetrics = melonConfig.Observability.Otlp.EnableMetrics,
+                    enableTraces = melonConfig.Observability.Otlp.EnableTraces,
+                    metricsExportIntervalMs = melonConfig.Observability.Otlp.MetricsExportIntervalMs,
+                    timeoutMs = melonConfig.Observability.Otlp.TimeoutMs
+                }
+            },
+            queueGc = new
+            {
+                enabled = melonConfig.QueueGC.Enabled,
+                intervalSeconds = melonConfig.QueueGC.IntervalSeconds,
+                inactiveThresholdSeconds = melonConfig.QueueGC.InactiveThresholdSeconds,
+                onlyNonDurable = melonConfig.QueueGC.OnlyNonDurable,
+                maxQueues = melonConfig.QueueGC.MaxQueues
+            },
+            clusterSettings = new
+            {
+                enabled = melonConfig.Cluster.Enabled,
+                nodeId = melonConfig.Cluster.NodeId,
+                nodeAddress = melonConfig.Cluster.NodeAddress,
+                seedNodes = melonConfig.Cluster.SeedNodes,
+                discoveryIntervalSeconds = melonConfig.Cluster.DiscoveryIntervalSeconds,
+                nodeTimeoutSeconds = melonConfig.Cluster.NodeTimeoutSeconds,
+                enableReplication = melonConfig.Cluster.EnableReplication,
+                requireQuorumForWrites = melonConfig.Cluster.RequireQuorumForWrites,
+                consistency = melonConfig.Cluster.Consistency,
+                sharedKeyConfigured = !string.IsNullOrWhiteSpace(melonConfig.Cluster.SharedKey)
+            }
+        },
         uptime = DateTime.UtcNow.Subtract(Process.GetCurrentProcess().StartTime.ToUniversalTime()),
         timestamp = DateTimeOffset.UtcNow
     });
