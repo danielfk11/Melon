@@ -1120,7 +1120,32 @@ public class TcpServer
 
         try
         {
+            var previous = _exchangeManager.GetExchange(payload.Exchange);
             _exchangeManager.DeclareExchange(payload.Exchange, exchangeType, payload.Durable);
+
+            if (_clusterCoordinator?.Enabled == true)
+            {
+                var replicated = await _clusterCoordinator.ReplicateDeclareExchangeAsync(
+                    payload.Exchange,
+                    payload.Type,
+                    payload.Durable);
+
+                if (!replicated)
+                {
+                    if (previous == null)
+                    {
+                        _exchangeManager.DeleteExchange(payload.Exchange);
+                    }
+                    else
+                    {
+                        _exchangeManager.DeclareExchange(previous.Name, previous.Type, previous.Durable);
+                    }
+
+                    await SendError(connection, frame.CorrelationId, "Declare exchange failed to meet cluster consistency policy.");
+                    return;
+                }
+            }
+
             await WriteFrameAsync(connection, new Frame
             {
                 Type = MessageType.DeclareExchange,
@@ -1140,7 +1165,28 @@ public class TcpServer
 
         try
         {
+            var alreadyBound = _exchangeManager.GetBindings(payload.Exchange)
+                .Any(b =>
+                    string.Equals(b.QueueName, payload.Queue, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(b.RoutingKey, payload.RoutingKey, StringComparison.OrdinalIgnoreCase));
+
             _exchangeManager.BindQueue(payload.Exchange, payload.Queue, payload.RoutingKey);
+
+            if (!alreadyBound && _clusterCoordinator?.Enabled == true)
+            {
+                var replicated = await _clusterCoordinator.ReplicateBindQueueAsync(
+                    payload.Exchange,
+                    payload.Queue,
+                    payload.RoutingKey);
+
+                if (!replicated)
+                {
+                    _exchangeManager.UnbindQueue(payload.Exchange, payload.Queue, payload.RoutingKey);
+                    await SendError(connection, frame.CorrelationId, "Bind queue failed to meet cluster consistency policy.");
+                    return;
+                }
+            }
+
             await WriteFrameAsync(connection, new Frame
             {
                 Type = MessageType.BindQueue,
@@ -1158,7 +1204,28 @@ public class TcpServer
     {
         var payload = (UnbindQueuePayload)frame.Payload!;
 
+        var existed = _exchangeManager.GetBindings(payload.Exchange)
+            .Any(b =>
+                string.Equals(b.QueueName, payload.Queue, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(b.RoutingKey, payload.RoutingKey, StringComparison.OrdinalIgnoreCase));
+
         _exchangeManager.UnbindQueue(payload.Exchange, payload.Queue, payload.RoutingKey);
+
+        if (existed && _clusterCoordinator?.Enabled == true)
+        {
+            var replicated = await _clusterCoordinator.ReplicateUnbindQueueAsync(
+                payload.Exchange,
+                payload.Queue,
+                payload.RoutingKey);
+
+            if (!replicated)
+            {
+                _exchangeManager.BindQueue(payload.Exchange, payload.Queue, payload.RoutingKey);
+                await SendError(connection, frame.CorrelationId, "Unbind queue failed to meet cluster consistency policy.");
+                return;
+            }
+        }
+
         await WriteFrameAsync(connection, new Frame
         {
             Type = MessageType.UnbindQueue,

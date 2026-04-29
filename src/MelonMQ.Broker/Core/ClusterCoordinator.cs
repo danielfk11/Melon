@@ -24,6 +24,27 @@ public sealed record ClusterDeclareQueueReplicationRequest(
     string SourceNodeId,
     long ReplicatedAtUnixMs);
 
+public sealed record ClusterDeclareExchangeReplicationRequest(
+    string Exchange,
+    string Type,
+    bool Durable,
+    string SourceNodeId,
+    long ReplicatedAtUnixMs);
+
+public sealed record ClusterBindQueueReplicationRequest(
+    string Exchange,
+    string Queue,
+    string RoutingKey,
+    string SourceNodeId,
+    long ReplicatedAtUnixMs);
+
+public sealed record ClusterUnbindQueueReplicationRequest(
+    string Exchange,
+    string Queue,
+    string RoutingKey,
+    string SourceNodeId,
+    long ReplicatedAtUnixMs);
+
 public sealed record ClusterPublishReplicationRequest(
     string Queue,
     Guid MessageId,
@@ -334,6 +355,54 @@ public class ClusterCoordinator
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         return await ReplicateAsync("declare", "/cluster/replicate/declare", payload, cancellationToken);
+    }
+
+    public async Task<bool> ReplicateDeclareExchangeAsync(
+        string exchange,
+        string type,
+        bool durable,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = new ClusterDeclareExchangeReplicationRequest(
+            exchange,
+            type,
+            durable,
+            NodeId,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        return await ReplicateAsync("declare_exchange", "/cluster/replicate/exchange/declare", payload, cancellationToken);
+    }
+
+    public async Task<bool> ReplicateBindQueueAsync(
+        string exchange,
+        string queue,
+        string routingKey,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = new ClusterBindQueueReplicationRequest(
+            exchange,
+            queue,
+            routingKey,
+            NodeId,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        return await ReplicateAsync("bind_queue", "/cluster/replicate/exchange/bind", payload, cancellationToken);
+    }
+
+    public async Task<bool> ReplicateUnbindQueueAsync(
+        string exchange,
+        string queue,
+        string routingKey,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = new ClusterUnbindQueueReplicationRequest(
+            exchange,
+            queue,
+            routingKey,
+            NodeId,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        return await ReplicateAsync("unbind_queue", "/cluster/replicate/exchange/unbind", payload, cancellationToken);
     }
 
     public async Task<bool> ReplicatePublishAsync(

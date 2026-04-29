@@ -506,8 +506,9 @@ Se preferir autenticar explicitamente apos conectar, use:
 
 ### Exchanges
 
-- Exchange e bindings funcionam em runtime.
-- Flag durable existe no contrato, mas metadados de exchange/binding nao sao persistidos no runtime atual.
+- Exchanges e bindings duraveis sao persistidos em metadata local e recarregados no startup.
+- Mudancas de topologia de exchange (declare/bind/unbind) tambem sao replicadas no cluster atual.
+- O cluster ainda nao possui log de consenso forte nem eleicao estilo Raft; a lideranca continua baseada em membership/quorum.
 
 ### Autenticacao TCP e cliente oficial
 
@@ -561,10 +562,6 @@ Cobertura atual inclui unitarios e integracao para:
 - observabilidade Prometheus/OTLP
 
 ## Roadmap tecnico (lacunas atuais)
-
-- [ ] Persistencia de metadados de exchange e bindings
-  O que resolve: evita redeclaracao manual de topologias apos restart.
-  Como configurar hoje (mitigacao): executar bootstrap declarativo de exchanges/bindings no startup dos servicos.
 
 - [ ] Consenso de cluster forte (log de consenso e eleicao robusta)
   O que resolve: reduz riscos em split-brain e melhora garantias de replicacao.

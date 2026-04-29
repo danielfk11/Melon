@@ -223,4 +223,36 @@ public class ExchangeIntegrationTests : IAsyncLifetime
         await ch.PublishToExchangeAsync("test.unbind", "key", Bytes("after-unbind"));
         (await TryReceiveOne(ch, "unbind.q", timeoutMs: 500)).Should().BeNull();
     }
+
+    [Fact]
+    public async Task DurableExchangeTopology_ShouldSurviveBrokerRestart()
+    {
+        var dataDir = Path.Combine(Path.GetTempPath(), "melonmq-tests", Guid.NewGuid().ToString("N"));
+
+        await using (var host = new TestBrokerHost(dataDir))
+        {
+            await host.StartAsync();
+
+            await using var conn = await MelonConnection.ConnectAsync($"melon://127.0.0.1:{host.TcpPort}");
+            await using var ch = await conn.CreateChannelAsync();
+
+            await ch.DeclareExchangeAsync("durable.events", "topic", durable: true);
+            await ch.DeclareQueueAsync("durable.events.orders");
+            await ch.BindQueueAsync("durable.events", "durable.events.orders", "orders.*");
+        }
+
+        await using (var restarted = new TestBrokerHost(dataDir))
+        {
+            await restarted.StartAsync();
+
+            await using var conn = await MelonConnection.ConnectAsync($"melon://127.0.0.1:{restarted.TcpPort}");
+            await using var ch = await conn.CreateChannelAsync();
+
+            await ch.DeclareQueueAsync("durable.events.orders");
+            await ch.PublishToExchangeAsync("durable.events", "orders.created", Bytes("after-restart"));
+
+            var received = await TryReceiveOne(ch, "durable.events.orders");
+            received.Should().Be("after-restart", "durable exchange topology should be loaded from persisted metadata after restart");
+        }
+    }
 }

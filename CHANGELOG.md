@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Persistencia de topologia de exchanges/bindings duraveis com reload no startup do broker.
+- Replicacao de declare/bind/unbind de exchanges no modelo de cluster atual.
 - Publisher confirm duravel para publish em filas duraveis e streams duraveis, aguardando flush/fsync antes do sucesso.
 - Replicacao de publish em cluster alinhada ao mesmo contrato de confirmacao duravel.
 - Persistencia de offsets de stream consumer/group para filas duraveis, com retomada apos restart do broker.

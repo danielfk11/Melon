@@ -116,7 +116,12 @@ builder.Services.AddOpenTelemetry()
 builder.Services.AddSingleton<MelonMetrics>();
 builder.Services.AddSingleton<ClusterCoordinator>();
 builder.Services.AddSingleton<ConnectionManager>();
-builder.Services.AddSingleton<ExchangeManager>();
+builder.Services.AddSingleton<ExchangeManager>(provider =>
+{
+    var config = provider.GetRequiredService<MelonMQConfiguration>();
+    var logger = provider.GetRequiredService<ILogger<ExchangeManager>>();
+    return new ExchangeManager(logger, config.DataDirectory);
+});
 builder.Services.AddSingleton<TcpServer>(provider =>
 {
     var config = provider.GetRequiredService<MelonMQConfiguration>();
@@ -217,6 +222,36 @@ app.MapPost("/cluster/replicate/declare", (ClusterDeclareQueueReplicationRequest
         return Results.Unauthorized();
 
     queueManager.DeclareQueue(request.Queue, request.Durable, request.DeadLetterQueue, request.DefaultTtlMs);
+    return Results.Ok(new { success = true });
+});
+
+app.MapPost("/cluster/replicate/exchange/declare", (ClusterDeclareExchangeReplicationRequest request, ExchangeManager exchangeManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
+{
+    if (!clusterCoordinator.ValidateClusterRequest(context))
+        return Results.Unauthorized();
+
+    if (!Enum.TryParse<ExchangeType>(request.Type, ignoreCase: true, out var exchangeType))
+        return Results.BadRequest(new { error = $"Unknown exchange type '{request.Type}'" });
+
+    exchangeManager.DeclareExchange(request.Exchange, exchangeType, request.Durable);
+    return Results.Ok(new { success = true });
+});
+
+app.MapPost("/cluster/replicate/exchange/bind", (ClusterBindQueueReplicationRequest request, ExchangeManager exchangeManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
+{
+    if (!clusterCoordinator.ValidateClusterRequest(context))
+        return Results.Unauthorized();
+
+    exchangeManager.BindQueue(request.Exchange, request.Queue, request.RoutingKey);
+    return Results.Ok(new { success = true });
+});
+
+app.MapPost("/cluster/replicate/exchange/unbind", (ClusterUnbindQueueReplicationRequest request, ExchangeManager exchangeManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
+{
+    if (!clusterCoordinator.ValidateClusterRequest(context))
+        return Results.Unauthorized();
+
+    exchangeManager.UnbindQueue(request.Exchange, request.Queue, request.RoutingKey);
     return Results.Ok(new { success = true });
 });
 
