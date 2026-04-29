@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>MelonMQ.Client</PackageId>
-    <Version>1.0.0-preview.2</Version>
+    <Version>1.0.0-preview.5</Version>
     <Authors>MelonMQ Team</Authors>
     <Description>Preview .NET client for the MelonMQ broker with TCP, TLS, and AUTH support</Description>
     <PackageTags>messagequeue;broker;dotnet;csharp;messaging;client;tcp;preview</PackageTags>

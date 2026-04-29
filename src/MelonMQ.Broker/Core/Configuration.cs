@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 
 namespace MelonMQ.Broker.Core;
 
@@ -26,9 +27,32 @@ public class MelonMQConfiguration
 public class ObservabilityConfiguration
 {
     public string ServiceName { get; set; } = "MelonMQ.Broker";
-    public string ServiceVersion { get; set; } = "1.0.0-preview.2";
+    public string ServiceVersion { get; set; } = RuntimeVersionResolver.GetCurrentVersion();
     public PrometheusConfiguration Prometheus { get; set; } = new();
     public OtlpConfiguration Otlp { get; set; } = new();
+}
+
+public static class RuntimeVersionResolver
+{
+    public static string GetCurrentVersion()
+    {
+        var assembly = typeof(RuntimeVersionResolver).Assembly;
+
+        var informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            var plusIndex = informationalVersion.IndexOf('+');
+            return plusIndex >= 0
+                ? informationalVersion[..plusIndex]
+                : informationalVersion;
+        }
+
+        var assemblyVersion = assembly.GetName().Version?.ToString();
+        return string.IsNullOrWhiteSpace(assemblyVersion) ? "unknown" : assemblyVersion;
+    }
 }
 
 public class PrometheusConfiguration

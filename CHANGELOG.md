@@ -13,7 +13,7 @@
 - Teste de integracao cobrindo `StreamAck` com restart no mesmo `DataDirectory`.
 - Teste unitario cobrindo publisher confirm duravel com `BatchFlushMs` atrasado.
 
-## 1.0.0-preview.2 - 2026-04-28
+## 1.0.0-preview.5 - 2026-04-28
 
 - Alinhamento do repositorio com o estado publicado apos o preview inicial.
 - Metadados de NuGet do `MelonMQ.Protocol` e `MelonMQ.Broker` completados com readme, licenca e links de repositorio.

@@ -1316,10 +1316,32 @@ createApp({
         },
         formatUptime(u) {
             if (!u) return '';
-            const h = Math.floor((u.totalSeconds || 0) / 3600);
-            const m = Math.floor(((u.totalSeconds || 0) % 3600) / 60);
-            const s = Math.floor((u.totalSeconds || 0) % 60);
-            if (u.days > 0) return `${u.days}d ${u.hours}h ${u.minutes}m`;
+
+            let totalSeconds = 0;
+            let days = 0;
+            let hours = 0;
+            let minutes = 0;
+
+            if (typeof u === 'string') {
+                const match = u.match(/^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
+                if (!match) return u;
+
+                days = Number(match[1] || 0);
+                hours = Number(match[2] || 0);
+                minutes = Number(match[3] || 0);
+                const seconds = Number(match[4] || 0);
+                totalSeconds = (((days * 24) + hours) * 60 + minutes) * 60 + seconds;
+            } else {
+                totalSeconds = Number(u.totalSeconds || 0);
+                days = Number(u.days || 0);
+                hours = Number(u.hours || 0);
+                minutes = Number(u.minutes || 0);
+            }
+
+            const h = Math.floor(totalSeconds / 3600);
+            const m = Math.floor((totalSeconds % 3600) / 60);
+            const s = Math.floor(totalSeconds % 60);
+            if (days > 0) return `${days}d ${hours}h ${minutes}m`;
             if (h > 0) return `${h}h ${m}m`;
             return `${m}m ${s}s`;
         },

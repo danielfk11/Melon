@@ -13,6 +13,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Bind and validate configuration
 var melonConfig = new MelonMQConfiguration();
 builder.Configuration.GetSection("MelonMQ").Bind(melonConfig);
+if (string.IsNullOrWhiteSpace(melonConfig.Observability.ServiceVersion))
+{
+    melonConfig.Observability.ServiceVersion = RuntimeVersionResolver.GetCurrentVersion();
+}
 var strictSecurityEnvironment = builder.Environment.IsProduction() || builder.Environment.IsStaging();
 melonConfig.ValidateConfiguration(strictSecurityEnvironment);
 builder.Services.AddSingleton(melonConfig);

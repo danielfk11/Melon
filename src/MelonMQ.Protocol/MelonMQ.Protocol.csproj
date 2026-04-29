@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PackageId>MelonMQ.Protocol</PackageId>
-    <Version>1.0.0-preview.2</Version>
+    <Version>1.0.0-preview.5</Version>
     <Authors>MelonMQ Team</Authors>
     <Description>Shared protocol types for MelonMQ broker and client</Description>
     <PackageTags>messagequeue;broker;dotnet;csharp;messaging;protocol;preview</PackageTags>

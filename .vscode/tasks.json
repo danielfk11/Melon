@@ -76,7 +76,7 @@
 			"args": [
 				"show-ref",
 				"--tags",
-				"v1.0.0-preview.2"
+				"v1.0.0-preview.5"
 			],
 			"isBackground": false
 		},
@@ -88,7 +88,7 @@
 				"push",
 				"origin",
 				"main",
-				"v1.0.0-preview.2"
+				"v1.0.0-preview.5"
 			],
 			"isBackground": false
 		},
