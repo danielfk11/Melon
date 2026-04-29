@@ -287,10 +287,17 @@ Endpoints internos de cluster (uso no-a-no):
 - POST /cluster/join
 - POST /cluster/leave
 - POST /cluster/replicate/declare
+- POST /cluster/replicate/exchange/declare
+- POST /cluster/replicate/exchange/bind
+- POST /cluster/replicate/exchange/unbind
 - POST /cluster/replicate/publish
 - POST /cluster/replicate/ack
 - POST /cluster/replicate/purge
 - POST /cluster/replicate/delete
+
+Observacao:
+
+- As rotas `POST /cluster/replicate/exchange/declare`, `POST /cluster/replicate/exchange/bind` e `POST /cluster/replicate/exchange/unbind` sao usadas para sincronizar a topologia de exchanges/bindings entre nos no modelo atual de cluster.
 
 ### Payloads HTTP exatos
 
