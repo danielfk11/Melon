@@ -583,21 +583,99 @@ Cobertura atual inclui unitarios e integracao para:
 
 ## Roadmap tecnico (lacunas atuais)
 
-- [ ] Consenso de cluster forte (log de consenso e eleicao robusta)
-  O que resolve: reduz riscos em split-brain e melhora garantias de replicacao.
-  Como configurar hoje (mitigacao): usar 3 nos, SharedKey obrigatoria, Consistency=quorum e RequireQuorumForWrites=true.
+Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para evoluir de preview tecnica para release estavel.
 
-- [ ] Streams particionados e rebalance automatica de grupos
-  O que resolve: escala horizontal de throughput de stream e distribuicao automatica de carga.
-  Como configurar hoje (mitigacao): shard manual por multiplas filas/streams e distribuicao por naming/routing key.
+### Fase 0 - Gate para release estavel (critico)
 
-- [ ] Coordenacao transacional end-to-end com efeitos externos
-  O que resolve: elimina duplicidade mesmo quando o handler precisa coordenar ACK com banco/HTTP/API externa.
-  Como configurar hoje (mitigacao): usar `exactlyOnce=true` no broker para dedupe por `messageId` e manter idempotencia/outbox-inbox na aplicacao consumidora.
+- [ ] Task: Consenso de cluster forte (log de consenso + eleicao robusta)
+  Definicao de pronto:
+  - eleicao automatica de lider sem split-brain em cenarios de particao de rede
+  - replicacao com commit quorum e sem confirmacao de escrita em no follower isolado
+  - testes de caos cobrindo perda de lider, perda de follower e reconvergencia
+  Mitigacao atual: usar 3 nos, SharedKey obrigatoria, Consistency=quorum e RequireQuorumForWrites=true.
 
-- [ ] SDKs oficiais adicionais e suite de conformidade de protocolo
-  O que resolve: melhora interoperabilidade multi-linguagem com menor risco de divergencia de implementacao.
-  Como configurar hoje (mitigacao): seguir framing/protocolo descritos nesta documentacao e validar em testes de integracao.
+- [ ] Task: Rolling upgrade N -> N+1 sem perda de dados
+  Definicao de pronto:
+  - matrix de compatibilidade broker x cliente publicada
+  - runbook de upgrade e rollback validado em integracao
+  - teste automatizado de rolling upgrade no CI
+  Mitigacao atual: executar upgrade com janela de manutencao controlada.
+
+- [ ] Task: Suite de confiabilidade para producao (chaos + soak)
+  Definicao de pronto:
+  - suite de caos no pipeline com cenarios kill -9, rede parcial e disco lento
+  - soak test de 24h/72h sem perda de mensagem em filas/streams duraveis
+  - SLOs basicos publicados (disponibilidade, latencia p95/p99, durabilidade)
+  Mitigacao atual: rodar testes de integracao e validar manualmente cenarios de falha.
+
+### Fase 1 - Escala e previsibilidade
+
+- [ ] Task: Streams particionados e rebalance automatica de grupos
+  Definicao de pronto:
+  - particionamento por chave com distribuicao consistente
+  - rebalance de grupos com retomada de offset sem duplicacao alem da semantica declarada
+  - metricas de lag por particao e por grupo
+  Mitigacao atual: shard manual por multiplas filas/streams e distribuicao por naming/routing key.
+
+- [ ] Task: Benchmark oficial reproduzivel
+  Definicao de pronto:
+  - cenarios padrao publicados (1KB, 16KB, 128KB; queue e stream; ack on/off)
+  - script de benchmark versionado no repositorio
+  - resultados de referencia por perfil de hardware publicados
+  Mitigacao atual: validar performance apenas por testes ad-hoc.
+
+- [ ] Task: Backpressure e protecao de overload ponta a ponta
+  Definicao de pronto:
+  - limites por conexao/tenant para publish e consume
+  - sinalizacao clara de throttling no protocolo e HTTP
+  - comportamento previsivel sob saturacao sem degradacao catasrofica
+  Mitigacao atual: limitar conexoes e tamanho de mensagem via configuracao.
+
+### Fase 2 - Semantica e operacao segura
+
+- [ ] Task: Coordenacao transacional end-to-end com efeitos externos
+  Definicao de pronto:
+  - guia oficial de outbox/inbox com exemplos de referencia
+  - suporte a fluxo transactional publish/ack (quando aplicavel)
+  - testes de falha entre side effect externo e ACK
+  Mitigacao atual: usar exactlyOnce=true no broker para dedupe por messageId e manter idempotencia/outbox-inbox na aplicacao consumidora.
+
+- [ ] Task: Seguranca enterprise (RBAC + auditoria + rotacao de segredo)
+  Definicao de pronto:
+  - papeis minimos (admin, operador, leitura, app)
+  - trilha de auditoria para acoes administrativas e mudancas de topologia
+  - rotacao de credenciais e chave de cluster sem restart total
+  Mitigacao atual: AUTH TCP + API key + TLS obrigatorios em Production/Staging.
+
+- [ ] Task: DR e backup/restore oficial
+  Definicao de pronto:
+  - snapshot e restore documentados com RPO/RTO alvo
+  - teste periodico de restore em ambiente limpo
+  - runbook de disaster recovery publicado
+  Mitigacao atual: confiar em persistencia local e procedimentos manuais.
+
+### Fase 3 - Ecossistema e adocao
+
+- [ ] Task: SDKs oficiais adicionais e suite de conformidade de protocolo
+  Definicao de pronto:
+  - SDKs oficiais alem de .NET (prioridade: Go, Java, Node)
+  - suite de conformidade rodando no CI para todos os SDKs
+  - exemplos equivalentes entre linguagens para queue, exchange e stream
+  Mitigacao atual: seguir framing/protocolo descritos nesta documentacao e validar em testes de integracao.
+
+- [ ] Task: CLI oficial de operacao e troubleshooting
+  Definicao de pronto:
+  - comandos para health, stats, lag, queues, purge e diagnostico de cluster
+  - saida amigavel e opcao json para automacao
+  - autenticacao via API key e suporte a TLS
+  Mitigacao atual: usar endpoints HTTP manualmente via curl.
+
+- [ ] Task: Pacote de operacao para Kubernetes
+  Definicao de pronto:
+  - chart/manifests de referencia com probes, recursos e persistencia
+  - guias de deploy HA com 3 nos
+  - dashboards e alertas padrao para Prometheus/Grafana
+  Mitigacao atual: deploy manual com configuracao custom por ambiente.
 
 ## Licenca
 
