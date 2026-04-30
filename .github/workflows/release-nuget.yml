@@ -19,6 +19,27 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Validate tag matches Directory.Build.props version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PROP_VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props || true)"
+
+          if [ -z "${PROP_VERSION}" ]; then
+            echo "Could not read <Version> from Directory.Build.props"
+            exit 1
+          fi
+
+          echo "Tag version: ${TAG_VERSION}"
+          echo "Props version: ${PROP_VERSION}"
+
+          if [ "${TAG_VERSION}" != "${PROP_VERSION}" ]; then
+            echo "Tag and project version mismatch."
+            echo "Expected tag: v${PROP_VERSION}"
+            exit 1
+          fi
+
+          echo "Version validation passed."
+
       - name: Restore
         run: dotnet restore MelonMQ.sln --nologo
 
