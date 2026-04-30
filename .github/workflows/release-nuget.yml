@@ -1,0 +1,53 @@
+name: release-nuget
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore MelonMQ.sln --nologo
+
+      - name: Build
+        run: dotnet build MelonMQ.sln --configuration Release --no-restore --nologo
+
+      - name: Pack NuGet packages
+        run: |
+          mkdir -p artifacts/nuget
+          dotnet pack src/MelonMQ.Protocol/MelonMQ.Protocol.csproj --configuration Release --no-build --nologo -o artifacts/nuget
+          dotnet pack src/MelonMQ.Client/MelonMQ.Client.csproj --configuration Release --no-build --nologo -o artifacts/nuget
+          dotnet pack src/MelonMQ.Broker/MelonMQ.Broker.csproj --configuration Release --no-build --nologo -o artifacts/nuget
+
+      - name: Push to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "${NUGET_API_KEY}" ]; then
+            echo "NUGET_API_KEY secret is not configured."
+            exit 1
+          fi
+
+          for pkg in artifacts/nuget/*.nupkg; do
+            if [[ "$pkg" == *".symbols.nupkg" ]]; then
+              continue
+            fi
+
+            dotnet nuget push "$pkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
