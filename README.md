@@ -388,6 +388,39 @@ Observacoes importantes:
 
 ## Cliente .NET (MelonMQ.Client)
 
+### Como baixar via comando (NuGet)
+
+Como os pacotes estao em prerelease, use `--prerelease` ou informe a versao completa.
+
+Instalacao rapida via .NET CLI:
+
+```bash
+dotnet add package MelonMQ.Client --prerelease
+dotnet add package MelonMQ.Protocol --prerelease
+dotnet add package MelonMQ.Broker --prerelease
+```
+
+Se quiser travar em uma versao especifica:
+
+```bash
+dotnet add package MelonMQ.Client --version 1.0.0-preview.6
+```
+
+Para conferir os pacotes instalados no projeto atual:
+
+```bash
+dotnet list package
+```
+
+Opcional (edicao manual do .csproj):
+
+```xml
+<ItemGroup>
+  <PackageReference Include="MelonMQ.Client" Version="1.0.0-preview.6" />
+  <PackageReference Include="MelonMQ.Protocol" Version="1.0.0-preview.6" />
+</ItemGroup>
+```
+
 API publica atual:
 
 - DeclareQueueAsync

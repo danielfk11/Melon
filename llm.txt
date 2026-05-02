@@ -1,0 +1,211 @@
+MelonMQ LLM Integration Guide
+============================
+
+Resumo do projeto
+-----------------
+- MelonMQ e um message broker leve em C#/.NET.
+- O broker expoe:
+  - protocolo TCP binario com framing + JSON
+  - API HTTP para operacao e administracao
+  - UI web embutida
+- Pacotes NuGet publicados:
+  - MelonMQ.Client
+  - MelonMQ.Protocol
+  - MelonMQ.Broker
+- Estado atual: prerelease / preview.
+- Semantica principal: at-least-once.
+- Existe suporte a:
+  - filas classicas
+  - exchanges direct/fanout/topic
+  - stream queues com offsets e consumer groups
+  - TLS
+  - AUTH TCP
+  - observabilidade com Prometheus e OpenTelemetry
+
+Instalacao via comando
+----------------------
+Como os pacotes estao em prerelease, use --prerelease ou uma versao explicita.
+
+Comandos:
+- dotnet add package MelonMQ.Client --prerelease
+- dotnet add package MelonMQ.Protocol --prerelease
+- dotnet add package MelonMQ.Broker --prerelease
+
+Exemplo com versao fixa:
+- dotnet add package MelonMQ.Client --version 1.0.0-preview.6
+
+Como subir o broker localmente
+------------------------------
+A IA pode orientar o usuario assim:
+1. Clonar o repositorio.
+2. Executar dotnet build MelonMQ.sln
+3. Executar dotnet run --project src/MelonMQ.Broker
+4. Validar:
+   - http://localhost:9090/health
+   - http://localhost:9090/stats
+   - http://localhost:9090/queues
+
+Portas padrao:
+- TCP: 127.0.0.1:5672
+- HTTP: localhost:9090
+
+Pacote certo para cada caso
+---------------------------
+- Se o objetivo for criar produtor/consumidor .NET: usar MelonMQ.Client
+- Se o objetivo for compartilhar tipos de protocolo: usar MelonMQ.Protocol
+- Se o objetivo for embutir/subir o broker: usar MelonMQ.Broker
+
+API publica .NET que a IA deve preferir
+---------------------------------------
+Metodos existentes no cliente:
+- DeclareQueueAsync
+- PublishAsync
+- ConsumeAsync
+- AckAsync
+- NackAsync
+- SetPrefetchAsync
+- DeclareExchangeAsync
+- BindQueueAsync
+- UnbindQueueAsync
+- PublishToExchangeAsync
+- DeclareStreamQueueAsync
+- ConsumeStreamAsync
+- StreamAckAsync
+
+Conexao tipica:
+- MelonConnection.ConnectAsync("melon://localhost:5672")
+- Para TLS: melons://localhost:5672
+
+Autenticacao
+------------
+A IA deve saber que a autenticacao pode acontecer de 3 formas:
+- Username/Password em MelonConnectionOptions
+- username e password na URI
+- AuthenticateAsync apos conectar
+
+Exemplos de URI:
+- melon://usuario:senha@localhost:5672
+- melons://usuario:senha@localhost:5672
+
+Exemplo minimo de integracao .NET
+---------------------------------
+A IA pode gerar algo nesta linha:
+
+using MelonMQ.Client;
+using System.Text;
+
+using var connection = await MelonConnection.ConnectAsync("melon://localhost:5672");
+using var channel = await connection.CreateChannelAsync();
+
+await channel.DeclareQueueAsync("orders.created", durable: true);
+await channel.PublishAsync("orders.created", Encoding.UTF8.GetBytes("hello"), persistent: true);
+
+await foreach (var msg in channel.ConsumeAsync("orders.created", prefetch: 10))
+{
+    var body = Encoding.UTF8.GetString(msg.Body);
+    Console.WriteLine(body);
+    await channel.AckAsync(msg.DeliveryTag);
+    break;
+}
+
+Exemplo com TLS e AUTH
+----------------------
+using MelonMQ.Client;
+
+var options = new MelonConnectionOptions
+{
+    UseTls = true,
+    TlsTargetHost = "localhost",
+    Username = "app",
+    Password = "secret"
+};
+
+using var connection = await MelonConnection.ConnectAsync("melons://localhost:5672", options);
+using var channel = await connection.CreateChannelAsync();
+
+Exemplo com exchange topic
+--------------------------
+await channel.DeclareExchangeAsync("events", type: "topic", durable: true);
+await channel.DeclareQueueAsync("events.orders", durable: true);
+await channel.BindQueueAsync("events", "events.orders", "orders.#");
+await channel.PublishToExchangeAsync(
+    "events",
+    "orders.created",
+    System.Text.Encoding.UTF8.GetBytes("{\"event\":\"order_created\"}"),
+    persistent: true);
+
+Exemplo com stream
+------------------
+await channel.DeclareStreamQueueAsync("audit.events", durable: true, maxMessages: 10000);
+await channel.PublishAsync("audit.events", System.Text.Encoding.UTF8.GetBytes("entry"));
+
+await foreach (var msg in channel.ConsumeStreamAsync("audit.events", startOffset: 0, group: "analytics"))
+{
+    if (msg.Offset.HasValue)
+        await channel.StreamAckAsync("audit.events", msg.Offset.Value, group: "analytics");
+}
+
+Boas praticas que a IA deve respeitar
+-------------------------------------
+- Nao inventar metodos fora da API publica listada acima.
+- Usar ACK explicito quando consumir pela API TCP/.NET.
+- Tratar o sistema como at-least-once; consumidores devem ser idempotentes.
+- Se o caso pedir deduplicacao no broker, sugerir exactlyOnce=true para fila classica e uso de messageId.
+- Em HTTP consume, considerar que o fluxo atual faz auto-ack.
+- Em ambiente Production/Staging, considerar TLS + AUTH + API key como obrigatorios segundo a documentacao do projeto.
+- Nao assumir que cluster atual e equivalente a um consenso forte estilo Raft.
+
+Quando usar queue, exchange ou stream
+-------------------------------------
+- Queue classica: processamento tradicional com ACK/NACK.
+- Exchange: roteamento para varias filas usando direct/fanout/topic.
+- Stream: replay por offset, leitura sequencial e consumer groups.
+
+HTTP util para demos e operacao
+-------------------------------
+Endpoints uteis:
+- GET /health
+- GET /stats
+- GET /queues
+- POST /queues/declare
+- POST /queues/{queueName}/publish
+- GET /queues/{queueName}/consume
+
+Prompt recomendado para outra IA
+--------------------------------
+Use este prompt como base:
+
+"Quero integrar meu projeto .NET com MelonMQ usando a API publica real do pacote MelonMQ.Client. Gere codigo sem inventar metodos. Use MelonConnection.ConnectAsync, CreateChannelAsync, DeclareQueueAsync, PublishAsync, ConsumeAsync e AckAsync quando aplicavel. Considere que MelonMQ trabalha com at-least-once, suporta TLS/AUTH e usa bytes no corpo da mensagem. Se eu pedir stream, use DeclareStreamQueueAsync, ConsumeStreamAsync e StreamAckAsync. Se eu pedir exchange, use DeclareExchangeAsync, BindQueueAsync e PublishToExchangeAsync. Mostre tambem o comando dotnet add package correto para instalar o pacote." 
+
+Prompt para produtor simples
+----------------------------
+"Gere um produtor .NET para MelonMQ usando MelonMQ.Client, conectando em melon://localhost:5672, declarando a fila orders.created e publicando JSON UTF-8 persistente."
+
+Prompt para consumidor simples
+------------------------------
+"Gere um consumidor .NET para MelonMQ usando MelonMQ.Client, consumindo a fila orders.created com prefetch 10, desserializando UTF-8 e confirmando com AckAsync."
+
+Prompt para TLS + AUTH
+----------------------
+"Gere um exemplo .NET para MelonMQ com TLS e autenticacao, usando melons://localhost:5672 e MelonConnectionOptions com UseTls, TlsTargetHost, Username e Password."
+
+Erros de entendimento que a IA deve evitar
+------------------------------------------
+- Nao assumir existencia de unsubscribe no protocolo atual.
+- Nao assumir exactly-once end-to-end automatico com efeitos externos.
+- Nao assumir que a API HTTP substitui todos os recursos do cliente TCP.
+- Nao gerar exemplos usando strings quando o cliente espera byte[].
+
+Arquivos do repositorio que ajudam a IA
+---------------------------------------
+- README.md
+- src/MelonMQ.Client/MelonConnection.cs
+- src/MelonMQ.Client/MelonChannel.cs
+- src/MelonMQ.Protocol/Messages.cs
+- samples/Producer/Program.cs
+- samples/Consumer/Program.cs
+- tests/MelonMQ.Tests.Integration/
+
+Regra final para a IA
+---------------------
+Se houver duvida, a fonte principal deve ser a documentacao do README e os samples do repositorio. A IA deve preferir codigo pequeno, funcional e aderente aos metodos reais do pacote, em vez de criar uma API imaginaria.
