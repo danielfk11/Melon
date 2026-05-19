@@ -87,7 +87,65 @@ public class ProgramSecurityTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
-    private static WebApplicationFactory<Program> CreateFactory(bool requireApiKey, bool protectReadEndpoints, string adminApiKey)
+    [Fact]
+    public async Task OperatorKey_ShouldCreateQueue_ButCannotDeleteQueue()
+    {
+        await using var factory = CreateFactory(
+            requireApiKey: true,
+            protectReadEndpoints: true,
+            adminApiKey: "",
+            apiKeys:
+            [
+                new ApiKeyEntryConfiguration { Name = "reader", Key = "read-key", Role = "read" },
+                new ApiKeyEntryConfiguration { Name = "operator", Key = "op-key", Role = "operator" },
+                new ApiKeyEntryConfiguration { Name = "admin", Key = "admin-key", Role = "admin" }
+            ]);
+
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Api-Key", "op-key");
+
+        var declareResponse = await client.PostAsJsonAsync("/queues/declare", new
+        {
+            name = "rbac-queue",
+            durable = false
+        });
+        declareResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var deleteResponse = await client.DeleteAsync("/queues/rbac-queue");
+        deleteResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ReadOnlyKey_ShouldNotAccessWriteEndpoints()
+    {
+        await using var factory = CreateFactory(
+            requireApiKey: true,
+            protectReadEndpoints: true,
+            adminApiKey: "",
+            apiKeys:
+            [
+                new ApiKeyEntryConfiguration { Name = "reader", Key = "read-key", Role = "read" }
+            ]);
+
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Api-Key", "read-key");
+
+        var readResponse = await client.GetAsync("/queues");
+        readResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var writeResponse = await client.PostAsJsonAsync("/queues/declare", new
+        {
+            name = "read-denied",
+            durable = false
+        });
+        writeResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    private static WebApplicationFactory<Program> CreateFactory(
+        bool requireApiKey,
+        bool protectReadEndpoints,
+        string adminApiKey,
+        ApiKeyEntryConfiguration[]? apiKeys = null)
     {
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -110,6 +168,7 @@ public class ProgramSecurityTests
                             RequireAdminApiKey = requireApiKey,
                             ProtectReadEndpoints = protectReadEndpoints,
                             AdminApiKey = adminApiKey,
+                            ApiKeys = apiKeys ?? Array.Empty<ApiKeyEntryConfiguration>(),
                             AllowedOrigins = Array.Empty<string>(),
                             Users = new Dictionary<string, string>()
                         }

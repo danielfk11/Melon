@@ -129,6 +129,10 @@ public class QueueGarbageCollectionConfiguration
 
 public class SecurityConfiguration
 {
+    public const string RoleRead = "read";
+    public const string RoleOperator = "operator";
+    public const string RoleAdmin = "admin";
+
     public string JwtSecret { get; set; } = string.Empty;
     public int JwtExpirationMinutes { get; set; } = 60;
     public bool RequireAuth { get; set; } = false;
@@ -142,6 +146,12 @@ public class SecurityConfiguration
     /// If empty, those endpoints are unprotected.
     /// </summary>
     public string AdminApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional RBAC keys for HTTP endpoints. Supports roles: read, operator, admin.
+    /// If configured, these keys are used in addition to legacy AdminApiKey.
+    /// </summary>
+    public ApiKeyEntryConfiguration[] ApiKeys { get; set; } = Array.Empty<ApiKeyEntryConfiguration>();
     
     /// <summary>
     /// Credential store for TCP auth. Key = username, Value = password.
@@ -151,6 +161,14 @@ public class SecurityConfiguration
     
     public bool IsConfigured => !string.IsNullOrEmpty(JwtSecret) || Users.Count > 0;
     public bool HasAdminApiKey => !string.IsNullOrEmpty(AdminApiKey);
+    public bool HasAnyApiKey => HasAdminApiKey || ApiKeys.Any(k => !string.IsNullOrWhiteSpace(k.Key));
+}
+
+public class ApiKeyEntryConfiguration
+{
+    public string Name { get; set; } = string.Empty;
+    public string Key { get; set; } = string.Empty;
+    public string Role { get; set; } = SecurityConfiguration.RoleAdmin;
 }
 
 public static class ConfigurationExtensions
@@ -178,10 +196,41 @@ public static class ConfigurationExtensions
                 "Use format 'pbkdf2-sha256$iterations$saltBase64$hashBase64'.");
         }
 
-        if (config.Security.RequireAdminApiKey && !config.Security.HasAdminApiKey)
+        if (config.Security.RequireAdminApiKey && !config.Security.HasAnyApiKey)
         {
             throw new InvalidOperationException(
-                "Admin API key protection is enabled, but MelonMQ:Security:AdminApiKey is empty.");
+                "Admin API key protection is enabled, but no key is configured. " +
+                "Set MelonMQ:Security:AdminApiKey or MelonMQ:Security:ApiKeys.");
+        }
+
+        var normalizedRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            SecurityConfiguration.RoleRead,
+            SecurityConfiguration.RoleOperator,
+            SecurityConfiguration.RoleAdmin
+        };
+
+        var seenApiKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var apiKey in config.Security.ApiKeys)
+        {
+            if (string.IsNullOrWhiteSpace(apiKey.Key))
+            {
+                throw new InvalidOperationException(
+                    "One or more MelonMQ:Security:ApiKeys entries has an empty key.");
+            }
+
+            if (!seenApiKeys.Add(apiKey.Key))
+            {
+                throw new InvalidOperationException(
+                    "MelonMQ:Security:ApiKeys contains duplicate key values.");
+            }
+
+            var role = apiKey.Role?.Trim() ?? string.Empty;
+            if (!normalizedRoles.Contains(role))
+            {
+                throw new InvalidOperationException(
+                    $"Invalid API key role '{apiKey.Role}'. Allowed roles: read, operator, admin.");
+            }
         }
 
         if (config.TcpTls.Enabled)
@@ -226,6 +275,33 @@ public static class ConfigurationExtensions
             {
                 throw new InvalidOperationException(
                     "Production clustering requires MelonMQ:Cluster:SharedKey to secure node-to-node traffic.");
+            }
+
+            if (config.Cluster.Enabled &&
+                !string.Equals(config.Cluster.Consistency, "quorum", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Production clustering requires MelonMQ:Cluster:Consistency=quorum.");
+            }
+
+            if (config.Cluster.Enabled && !config.Cluster.RequireQuorumForWrites)
+            {
+                throw new InvalidOperationException(
+                    "Production clustering requires MelonMQ:Cluster:RequireQuorumForWrites=true.");
+            }
+
+            if (config.Cluster.Enabled && config.Cluster.SeedNodes.Length < 3)
+            {
+                throw new InvalidOperationException(
+                    "Production clustering requires at least 3 seed nodes to reduce split-brain risk.");
+            }
+
+            var hasAdminRbacKey = config.Security.ApiKeys.Any(k =>
+                string.Equals(k.Role, SecurityConfiguration.RoleAdmin, StringComparison.OrdinalIgnoreCase));
+            if (!hasAdminRbacKey && !config.Security.HasAdminApiKey)
+            {
+                throw new InvalidOperationException(
+                    "Production requires at least one admin API key (legacy AdminApiKey or ApiKeys role=admin).");
             }
         }
 

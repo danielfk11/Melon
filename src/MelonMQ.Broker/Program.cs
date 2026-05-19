@@ -146,6 +146,7 @@ if (!builder.Environment.IsEnvironment("Testing"))
 }
 
 var app = builder.Build();
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
 
 // Configure middleware
 app.UseCors();
@@ -160,7 +161,7 @@ app.Use(async (context, next) =>
     if (melonConfig.Observability.Prometheus.Enabled &&
         context.Request.Path.Equals(melonConfig.Observability.Prometheus.EndpointPath, StringComparison.OrdinalIgnoreCase) &&
         melonConfig.Observability.Prometheus.RequireAdminApiKey &&
-        !ValidateAdminApiKey(context, readOnlyEndpoint: true))
+        !ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         return;
@@ -183,7 +184,7 @@ if (melonConfig.Observability.Prometheus.Enabled)
 
 app.MapGet("/cluster/status", (ClusterCoordinator clusterCoordinator, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
     return Results.Ok(clusterCoordinator.GetStatus());
@@ -323,7 +324,7 @@ app.MapPost("/cluster/replicate/delete", (ClusterDeleteQueueReplicationRequest r
 
 app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
     var isListening = tcpServer.IsListening;
@@ -341,7 +342,7 @@ app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager,
 
 app.MapGet("/queues", (QueueManager queueManager, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
     var queues = queueManager.GetAllQueues().Select(q => new
@@ -364,7 +365,7 @@ app.MapGet("/queues", (QueueManager queueManager, HttpContext context) =>
 
 app.MapGet("/stats", (HttpContext context, QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics, ClusterCoordinator clusterCoordinator, MelonMQConfiguration melonConfig, IWebHostEnvironment environment) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
     var queues = queueManager.GetAllQueues().Select(q => new
@@ -425,6 +426,7 @@ app.MapGet("/stats", (HttpContext context, QueueManager queueManager, Connection
                 requireAdminApiKey = melonConfig.Security.RequireAdminApiKey,
                 protectReadEndpoints = melonConfig.Security.ProtectReadEndpoints,
                 adminApiKeyConfigured = melonConfig.Security.HasAdminApiKey,
+                apiKeysConfigured = melonConfig.Security.ApiKeys.Length,
                 allowedOrigins = melonConfig.Security.AllowedOrigins,
                 tcpTls = new
                 {
@@ -484,7 +486,7 @@ app.MapGet("/stats", (HttpContext context, QueueManager queueManager, Connection
 
 app.MapPost("/queues/declare", async (QueueDeclareRequest request, QueueManager queueManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleOperator))
         return Results.Unauthorized();
 
     if (!clusterCoordinator.CanAcceptWrites(out var clusterWriteError))
@@ -512,21 +514,24 @@ app.MapPost("/queues/declare", async (QueueDeclareRequest request, QueueManager 
             if (!replicated)
             {
                 queueManager.DeleteQueue(request.Name);
+                AuditAdministrativeAction(context, "queue.declare", request.Name, success: false, "cluster replication failed");
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
             }
         }
 
+        AuditAdministrativeAction(context, "queue.declare", request.Name, success: true);
         return Results.Ok(new { success = true, queue = request.Name });
     }
     catch (Exception ex)
     {
+        AuditAdministrativeAction(context, "queue.declare", request.Name, success: false, ex.Message);
         return Results.BadRequest(new { error = ex.Message });
     }
 });
 
 app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager queueManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleOperator))
         return Results.Unauthorized();
 
     if (!clusterCoordinator.CanAcceptWrites(out var clusterWriteError))
@@ -547,21 +552,24 @@ app.MapPost("/queues/{queueName}/purge", async (string queueName, QueueManager q
             var replicated = await clusterCoordinator.ReplicatePurgeAsync(queueName);
             if (!replicated)
             {
+                AuditAdministrativeAction(context, "queue.purge", queueName, success: false, "cluster replication failed");
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
             }
         }
 
+        AuditAdministrativeAction(context, "queue.purge", queueName, success: true);
         return Results.Ok(new { success = true, queue = queueName });
     }
     catch (Exception ex)
     {
+        AuditAdministrativeAction(context, "queue.purge", queueName, success: false, ex.Message);
         return Results.BadRequest(new { error = ex.Message });
     }
 });
 
 app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishRequest request, QueueManager queueManager, ClusterCoordinator clusterCoordinator, MelonMetrics metrics, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleOperator))
         return Results.Unauthorized();
 
     if (!clusterCoordinator.CanAcceptWrites(out var clusterWriteError))
@@ -604,9 +612,11 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
         {
             if (queue.IsExactlyOnce && queue.HasSeenMessageId(message.MessageId))
             {
+                AuditAdministrativeAction(context, "queue.publish", queueName, success: true, "duplicate suppressed");
                 return Results.Ok(new { success = true, duplicate = true, messageId = message.MessageId });
             }
 
+            AuditAdministrativeAction(context, "queue.publish", queueName, success: false, "enqueue rejected");
             return Results.Ok(new { success = false, messageId = message.MessageId });
         }
 
@@ -616,6 +626,7 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
             if (!replicated)
             {
                 await queue.AckByMessageIdAsync(message.MessageId);
+                AuditAdministrativeAction(context, "queue.publish", queueName, success: false, "cluster replication failed");
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
             }
         }
@@ -628,17 +639,19 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
             source: "http",
             replicated: clusterCoordinator.Enabled);
 
+        AuditAdministrativeAction(context, "queue.publish", queueName, success: true);
         return Results.Ok(new { success = true, messageId = message.MessageId });
     }
     catch (Exception ex)
     {
+        AuditAdministrativeAction(context, "queue.publish", queueName, success: false, ex.Message);
         return Results.BadRequest(new { error = ex.Message });
     }
 });
 
 app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager queueManager, ClusterCoordinator clusterCoordinator, MelonMetrics metrics, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleOperator))
         return Results.Unauthorized();
 
     if (!clusterCoordinator.CanAcceptWrites(out var clusterWriteError))
@@ -667,6 +680,7 @@ app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager 
         var acked = await queue.AckAsync(deliveryTag);
         if (!acked)
         {
+            AuditAdministrativeAction(context, "queue.consume", queueName, success: false, "ack failed");
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
 
@@ -682,6 +696,7 @@ app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager 
         sw.Stop();
         metrics.RecordMessageConsumed(queueName, sw.Elapsed, message.Redelivered, source: "http");
 
+        AuditAdministrativeAction(context, "queue.consume", queueName, success: true);
         var bodyString = System.Text.Encoding.UTF8.GetString(message.Body.Span);
         return Results.Ok(new 
         { 
@@ -696,15 +711,27 @@ app.MapGet("/queues/{queueName}/consume", async (string queueName, QueueManager 
     }
     catch (Exception ex)
     {
+        AuditAdministrativeAction(context, "queue.consume", queueName, success: false, ex.Message);
         return Results.BadRequest(new { error = ex.Message });
     }
 });
 
-var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation("MelonMQ Broker starting...");
 
-// Helper: validate admin API key for HTTP write/admin endpoints
-bool ValidateAdminApiKey(HttpContext context, bool readOnlyEndpoint = false)
+void AuditAdministrativeAction(HttpContext context, string action, string target, bool success, string? reason = null)
+{
+    var apiKeyId = context.Request.Headers["X-Api-Key-Id"].FirstOrDefault();
+    logger.LogInformation(
+        "AUDIT action={Action} target={Target} success={Success} apiKeyId={ApiKeyId} remoteIp={RemoteIp} reason={Reason}",
+        action,
+        target,
+        success,
+        apiKeyId ?? "unknown",
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        reason ?? string.Empty);
+}
+
+bool ValidateApiAccess(HttpContext context, string requiredRole, bool readOnlyEndpoint = false)
 {
     var runtimeConfig = context.RequestServices.GetRequiredService<MelonMQConfiguration>();
     var security = runtimeConfig.Security;
@@ -719,21 +746,74 @@ bool ValidateAdminApiKey(HttpContext context, bool readOnlyEndpoint = false)
         return true;
     }
 
+    var apiKey = context.Request.Headers["X-Api-Key"].FirstOrDefault();
+    if (string.IsNullOrWhiteSpace(apiKey))
+    {
+        return false;
+    }
+
+    if (TryResolveRbacRole(security, apiKey!, out var callerRole))
+    {
+        return RoleToLevel(callerRole) >= RoleToLevel(requiredRole);
+    }
+
     if (!security.HasAdminApiKey)
     {
         return false;
     }
 
-    var apiKey = context.Request.Headers["X-Api-Key"].FirstOrDefault();
-    if (string.IsNullOrEmpty(apiKey))
+    var providedBytes = Encoding.UTF8.GetBytes(apiKey!);
+    var expectedBytes = Encoding.UTF8.GetBytes(security.AdminApiKey);
+    var isLegacyAdmin = providedBytes.Length == expectedBytes.Length &&
+                        CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
+    if (!isLegacyAdmin)
     {
         return false;
     }
 
-    var providedBytes = Encoding.UTF8.GetBytes(apiKey);
-    var expectedBytes = Encoding.UTF8.GetBytes(security.AdminApiKey);
-    return providedBytes.Length == expectedBytes.Length &&
-           CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
+    return RoleToLevel(SecurityConfiguration.RoleAdmin) >= RoleToLevel(requiredRole);
+}
+
+static bool TryResolveRbacRole(SecurityConfiguration security, string apiKey, out string role)
+{
+    role = SecurityConfiguration.RoleRead;
+    if (security.ApiKeys.Length == 0)
+    {
+        return false;
+    }
+
+    foreach (var configured in security.ApiKeys)
+    {
+        var expected = configured.Key?.Trim();
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            continue;
+        }
+
+        var providedBytes = Encoding.UTF8.GetBytes(apiKey);
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var matches = providedBytes.Length == expectedBytes.Length &&
+                      CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
+        if (!matches)
+        {
+            continue;
+        }
+
+        role = configured.Role?.Trim().ToLowerInvariant() ?? SecurityConfiguration.RoleRead;
+        return true;
+    }
+
+    return false;
+}
+
+static int RoleToLevel(string role)
+{
+    return role.Trim().ToLowerInvariant() switch
+    {
+        SecurityConfiguration.RoleAdmin => 2,
+        SecurityConfiguration.RoleOperator => 1,
+        _ => 0
+    };
 }
 
 static OtlpExportProtocol ParseOtlpProtocol(string protocol)
@@ -763,7 +843,7 @@ static Uri BuildOtlpSignalEndpoint(string configuredEndpoint, OtlpExportProtocol
 // Queue deletion endpoint
 app.MapDelete("/queues/{queueName}", async (string queueName, QueueManager queueManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleAdmin))
         return Results.Unauthorized();
 
     if (!clusterCoordinator.CanAcceptWrites(out var clusterWriteError))
@@ -780,17 +860,19 @@ app.MapDelete("/queues/{queueName}", async (string queueName, QueueManager queue
         var replicated = await clusterCoordinator.ReplicateDeleteQueueAsync(queueName);
         if (!replicated)
         {
+            AuditAdministrativeAction(context, "queue.delete", queueName, success: false, "cluster replication failed");
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
     }
 
+    AuditAdministrativeAction(context, "queue.delete", queueName, success: true);
     return Results.Ok(new { success = true, queue = queueName, message = $"Queue '{queueName}' deleted" });
 });
 
 // List inactive queues eligible for cleanup
 app.MapGet("/queues/inactive", (QueueManager queueManager, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
     var threshold = melonConfig.QueueGC.InactiveThresholdSeconds;
@@ -813,7 +895,7 @@ app.MapGet("/queues/inactive", (QueueManager queueManager, HttpContext context) 
 // Force GC run manually
 app.MapPost("/queues/gc", (QueueManager queueManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleAdmin))
         return Results.Unauthorized();
 
     if (clusterCoordinator.Enabled)
@@ -828,6 +910,7 @@ app.MapPost("/queues/gc", (QueueManager queueManager, ClusterCoordinator cluster
         melonConfig.QueueGC.InactiveThresholdSeconds,
         melonConfig.QueueGC.OnlyNonDurable);
 
+    AuditAdministrativeAction(context, "queue.gc", "all", success: true, $"removed={removed}");
     return Results.Ok(new
     {
         success = true,
@@ -839,7 +922,7 @@ app.MapPost("/queues/gc", (QueueManager queueManager, ClusterCoordinator cluster
 // GC configuration status
 app.MapGet("/queues/gc/status", (QueueManager queueManager, MelonMetrics metrics, HttpContext context) =>
 {
-    if (!ValidateAdminApiKey(context, readOnlyEndpoint: true))
+    if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
     return Results.Ok(new

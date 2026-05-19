@@ -174,6 +174,7 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
 | RequireAdminApiKey | false | Protege endpoints HTTP administrativos/escrita |
 | ProtectReadEndpoints | true | Se true, endpoints HTTP de leitura tambem exigem X-Api-Key quando RequireAdminApiKey=true |
 | AdminApiKey | vazio | Valor esperado em X-Api-Key |
+| ApiKeys | [] | Chaves RBAC opcionais `{ Name, Key, Role }` com papeis `read`, `operator`, `admin` |
 | AllowedOrigins | localhosts | CORS para API/UI |
 | JwtSecret / JwtExpirationMinutes | vazio / 60 | Presente no config, sem fluxo JWT ativo no runtime atual |
 
@@ -244,6 +245,7 @@ Quando o ambiente e Production ou Staging:
 - Security.RequireAuth deve ser true.
 - TcpTls.Enabled deve ser true.
 - Security.RequireAdminApiKey deve ser true.
+- Em cluster, Consistency deve ser `quorum`, RequireQuorumForWrites=true e SeedNodes >= 3.
 - Security.AllowedOrigins nao pode estar vazio.
 - Se Cluster.Enabled=true, Cluster.SharedKey e obrigatorio.
 
@@ -613,6 +615,19 @@ Cobertura atual inclui unitarios e integracao para:
 - seguranca HTTP por API key
 - cluster (leader/quorum)
 - observabilidade Prometheus/OTLP
+- cenarios de confiabilidade (restart/recuperacao duravel) e SLO local de round-trip (p95)
+
+## DR operacional (backup/restore)
+
+Scripts incluidos:
+
+- `scripts/dr-backup.sh <data-directory> <backup-directory>`
+- `scripts/dr-restore.sh <backup-archive.tar.gz> <target-data-directory> [--force]`
+
+Recomendacao:
+
+- executar backup com broker em janela controlada ou com I/O estabilizado
+- validar restore periodicamente em ambiente limpo
 
 ## Roadmap tecnico (lacunas atuais)
 
