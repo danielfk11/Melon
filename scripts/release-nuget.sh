@@ -28,6 +28,12 @@ if [[ -z "${PROP_VERSION}" ]]; then
   exit 1
 fi
 
+if [[ "${PROP_VERSION}" == v* ]]; then
+  echo "Invalid Directory.Build.props <Version>: '${PROP_VERSION}'"
+  echo "Use version without 'v' prefix. Example: 1.0.1"
+  exit 1
+fi
+
 TAG_VERSION="${RELEASE_TAG#v}"
 echo "Tag version: ${TAG_VERSION}"
 echo "Props version: ${PROP_VERSION}"
