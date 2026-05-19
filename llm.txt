@@ -32,7 +32,7 @@ Comandos:
 - dotnet add package MelonMQ.Broker --prerelease
 
 Exemplo com versao fixa:
-- dotnet add package MelonMQ.Client --version 1.0.0-preview.6
+- dotnet add package MelonMQ.Client --version 1.0.0-preview.7
 
 Como subir o broker localmente
 ------------------------------

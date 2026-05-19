@@ -17,8 +17,8 @@ fi
 if [[ -z "${RELEASE_TAG}" ]]; then
   echo "Release tag is required."
   echo "Use one of:"
-  echo "  RELEASE_TAG=v1.0.0-preview.6 NUGET_API_KEY=*** ./scripts/release-nuget.sh"
-  echo "  NUGET_API_KEY=*** ./scripts/release-nuget.sh --tag v1.0.0-preview.6"
+  echo "  RELEASE_TAG=v1.0.0-preview.7 NUGET_API_KEY=*** ./scripts/release-nuget.sh"
+  echo "  NUGET_API_KEY=*** ./scripts/release-nuget.sh --tag v1.0.0-preview.7"
   exit 1
 fi
 
