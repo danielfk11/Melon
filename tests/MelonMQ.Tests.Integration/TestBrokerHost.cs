@@ -17,6 +17,7 @@ internal sealed class TestBrokerHost : IAsyncDisposable
     public QueueManager QueueManager { get; }
     public ConnectionManager ConnectionManager { get; }
     public TcpServer TcpServer { get; }
+    public MelonMetrics Metrics { get; }
 
     public TestBrokerHost(string dataDirectory, Action<MelonMQConfiguration>? configure = null)
     {
@@ -64,12 +65,14 @@ internal sealed class TestBrokerHost : IAsyncDisposable
             _loggerFactory.CreateLogger<ConnectionManager>(),
             Configuration);
 
+        Metrics = new MelonMetrics();
+
         TcpServer = new TcpServer(
             QueueManager,
             ConnectionManager,
             Configuration,
             _loggerFactory.CreateLogger<TcpServer>(),
-            new MelonMetrics(),
+            Metrics,
             exchangeManager: new MelonMQ.Broker.Core.ExchangeManager(
                 _loggerFactory.CreateLogger<MelonMQ.Broker.Core.ExchangeManager>(),
                 Configuration.DataDirectory));

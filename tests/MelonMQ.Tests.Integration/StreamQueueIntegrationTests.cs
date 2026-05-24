@@ -1,5 +1,6 @@
 using FluentAssertions;
 using MelonMQ.Client;
+using System.Collections.Concurrent;
 using System.Text;
 using Xunit;
 
@@ -262,5 +263,116 @@ public class StreamQueueIntegrationTests : IAsyncLifetime
         await consumeTask;
 
         received.Should().Equal("live-a", "live-b", "live-c");
+    }
+
+    [Fact]
+    public async Task Stream_PartitionKey_DistributesConsistently()
+    {
+        using var conn = await Connect();
+        using var ch = await conn.CreateChannelAsync();
+        const string queue = "stream.partitioned";
+
+        await ch.DeclareStreamQueueAsync(queue, partitionCount: 4);
+
+        var keys = Enumerable.Range(0, 8).Select(i => $"tenant-{i}").ToArray();
+        foreach (var key in keys)
+            await ch.PublishAsync(queue, Bytes($"{key}:evt"), partitionKey: key);
+
+        var msgs = await CollectN(ch, queue, keys.Length, startOffset: 0);
+        var partitionByKey = new Dictionary<string, int>();
+        foreach (var msg in msgs)
+        {
+            var body = Str(msg.Body);
+            var key = body.Split(':')[0];
+            msg.Partition.Should().NotBeNull();
+            if (!partitionByKey.TryAdd(key, msg.Partition!.Value))
+            {
+                msg.Partition!.Value.Should().Be(partitionByKey[key], "same partition key must always map to the same partition");
+            }
+        }
+
+        partitionByKey.Values.Distinct().Count().Should().BeGreaterThan(1, "different keys should spread across partitions");
+    }
+
+    [Fact]
+    public async Task Stream_GroupRebalance_ResumesOffsets_AndUpdatesLagMetrics()
+    {
+        using var connPub = await Connect();
+        using var conn1 = await Connect();
+        using var conn2 = await Connect();
+        using var chPub = await connPub.CreateChannelAsync();
+        using var ch1 = await conn1.CreateChannelAsync();
+        using var ch2 = await conn2.CreateChannelAsync();
+
+        const string queue = "stream.rebalance";
+        const string group = "workers";
+        await chPub.DeclareStreamQueueAsync(queue, partitionCount: 4);
+
+        for (int i = 0; i < 8; i++)
+            await chPub.PublishAsync(queue, Bytes($"warm-{i}"), partition: i % 4);
+
+        var seenOffsets = new ConcurrentDictionary<long, string>();
+        var newMessagePartitionsByConsumer = new ConcurrentDictionary<string, ConcurrentBag<int>>();
+        var totalNewMessages = 16;
+        var consumedNewMessages = 0;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+
+        Task Consume(MelonChannel channel, string consumerName) => Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var msg in channel.ConsumeStreamAsync(queue, startOffset: 0, group: group, cancellationToken: cts.Token))
+                {
+                    msg.Offset.Should().NotBeNull();
+                    seenOffsets.TryAdd(msg.Offset!.Value, consumerName).Should().BeTrue("group consumption should not duplicate offsets when every message is acked");
+
+                    await channel.StreamAckAsync(
+                        queue,
+                        msg.Offset!.Value,
+                        group: group,
+                        partition: msg.Partition,
+                        partitionOffset: msg.PartitionOffset,
+                        cancellationToken: cts.Token);
+
+                    if (Str(msg.Body).StartsWith("new-", StringComparison.Ordinal))
+                    {
+                        newMessagePartitionsByConsumer
+                            .GetOrAdd(consumerName, _ => new ConcurrentBag<int>())
+                            .Add(msg.Partition!.Value);
+
+                        if (Interlocked.Increment(ref consumedNewMessages) >= totalNewMessages)
+                            cts.Cancel();
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+
+        var consumer1Task = Consume(ch1, "c1");
+        await Task.Delay(500);
+        var consumer2Task = Consume(ch2, "c2");
+        await Task.Delay(500);
+
+        for (int i = 0; i < totalNewMessages; i++)
+            await chPub.PublishAsync(queue, Bytes($"new-{i}"), partition: i % 4);
+
+        await Task.WhenAll(consumer1Task, consumer2Task);
+
+        newMessagePartitionsByConsumer.ContainsKey("c1").Should().BeTrue();
+        newMessagePartitionsByConsumer.ContainsKey("c2").Should().BeTrue("rebalance should assign at least one partition to the second consumer");
+
+        var allPostRebalancePartitions = newMessagePartitionsByConsumer
+            .SelectMany(kvp => kvp.Value.Select(p => (Consumer: kvp.Key, Partition: p)))
+            .ToList();
+        allPostRebalancePartitions.Should().NotBeEmpty();
+        allPostRebalancePartitions.Select(x => x.Partition).Distinct().Should().OnlyContain(p => p >= 0 && p < 4);
+
+        await Task.Delay(300);
+        var lagByGroupPartition = _host.Metrics.GetStreamGroupPartitionLagSnapshot()
+            .Where(kvp => kvp.Key.StartsWith($"{queue}|{group}|", StringComparison.Ordinal))
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+        lagByGroupPartition.Should().HaveCount(4);
+        lagByGroupPartition.Values.Should().OnlyContain(v => v == 0);
     }
 }

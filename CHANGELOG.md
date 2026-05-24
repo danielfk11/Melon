@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 - 2026-05-24
+
+- Streams particionados com `partitionCount` e publish por `partitionKey`/`partition`.
+- Rebalance automatico de consumer groups em stream com retomada por offset de particao.
+- Metricas de lag por grupo/particao para stream (`melonmq_stream_group_partition_lag` e `melonmq_stream_partition_lag_max`).
+
 ## 1.0.0-preview.3 - 2026-04-28
 
 - Modo opcional `exactlyOnce` para filas classicas, com deduplicacao broker-side por `messageId`.

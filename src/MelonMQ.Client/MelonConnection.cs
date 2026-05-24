@@ -354,7 +354,13 @@ public class MelonConnection : IDisposable, IAsyncDisposable
                     Queue = queue,
                     Offset = frame.Payload.Value.TryGetProperty("offset", out var offsetEl) &&
                              offsetEl.ValueKind != System.Text.Json.JsonValueKind.Null
-                             ? offsetEl.GetInt64() : null
+                             ? offsetEl.GetInt64() : null,
+                    Partition = frame.Payload.Value.TryGetProperty("partition", out var partitionEl) &&
+                                partitionEl.ValueKind != System.Text.Json.JsonValueKind.Null
+                                ? partitionEl.GetInt32() : null,
+                    PartitionOffset = frame.Payload.Value.TryGetProperty("partitionOffset", out var partitionOffsetEl) &&
+                                      partitionOffsetEl.ValueKind != System.Text.Json.JsonValueKind.Null
+                                      ? partitionOffsetEl.GetInt64() : null
                 };
 
                 if (_deliveryChannels.TryGetValue(queue, out var channel))

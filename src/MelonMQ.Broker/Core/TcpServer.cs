@@ -514,13 +514,20 @@ public class TcpServer
                     payload.Queue,
                     payload.Durable,
                     payload.StreamMaxLengthMessages ?? 100_000,
+                    payload.StreamPartitionCount ?? 1,
                     payload.StreamMaxAgeMs);
 
                 var streamResponse = new Frame
                 {
                     Type = MessageType.DeclareQueue,
                     CorrelationId = frame.CorrelationId,
-                    Payload = new { success = true, queue = payload.Queue, mode = "stream" }
+                    Payload = new
+                    {
+                        success = true,
+                        queue = payload.Queue,
+                        mode = "stream",
+                        partitionCount = payload.StreamPartitionCount ?? 1
+                    }
                 };
                 await WriteFrameAsync(connection, streamResponse);
                 return;
@@ -627,7 +634,15 @@ public class TcpServer
             foreach (var queueName in targetQueueNames)
             {
                 await PublishToQueueByName(
-                    queueName, bodyBytes, messageId, now, payload.TtlMs, payload.Persistent, cancellationToken);
+                    queueName,
+                    bodyBytes,
+                    messageId,
+                    now,
+                    payload.TtlMs,
+                    payload.Persistent,
+                    payload.PartitionKey ?? payload.RoutingKey,
+                    payload.Partition,
+                    cancellationToken);
             }
 
             sw.Stop();
@@ -645,11 +660,17 @@ public class TcpServer
         if (streamQueue != null)
         {
             long? expiresAt = payload.TtlMs.HasValue ? now + payload.TtlMs.Value : null;
-            await streamQueue.AppendAsync(bodyBytes, messageId, expiresAt);
+            await streamQueue.AppendAsync(
+                bodyBytes,
+                messageId,
+                expiresAt,
+                partitionKey: payload.PartitionKey ?? payload.RoutingKey,
+                partition: payload.Partition);
             sw.Stop();
             _metrics.RecordMessagePublished(
                 payload.Queue, sw.Elapsed, bodyBytes.Length, source: "tcp",
                 replicated: false);
+            RefreshStreamLagMetrics(payload.Queue, streamQueue);
             await SendPublishSuccess(connection, frame.CorrelationId, messageId);
             return;
         }
@@ -731,13 +752,21 @@ public class TcpServer
         long now,
         int? ttlMs,
         bool persistent,
+        string? partitionKey,
+        int? partition,
         CancellationToken cancellationToken = default)
     {
         var streamQueue = _queueManager.GetStreamQueue(queueName);
         if (streamQueue != null)
         {
             long? expiresAt = ttlMs.HasValue ? now + ttlMs.Value : null;
-            await streamQueue.AppendAsync(bodyBytes, messageId, expiresAt);
+            await streamQueue.AppendAsync(
+                bodyBytes,
+                messageId,
+                expiresAt,
+                partitionKey: partitionKey,
+                partition: partition);
+            RefreshStreamLagMetrics(queueName, streamQueue);
             return;
         }
 
@@ -805,16 +834,54 @@ public class TcpServer
         }
 
         var payload = (ConsumeSubscribePayload)frame.Payload!;
+        var consumerKey = !string.IsNullOrEmpty(payload.Group)
+            ? $"{payload.Queue}::grp:{payload.Group}"
+            : payload.Queue;
 
         // ── Stream queue path ─────────────────────────────────────────────
         var streamQueue = _queueManager.GetStreamQueue(payload.Queue);
         if (streamQueue != null)
         {
+            if (payload.Unsubscribe)
+            {
+                if (connection.ActiveConsumers.TryRemove(consumerKey, out var existingStreamConsumer))
+                {
+                    try { existingStreamConsumer.Cts.Cancel(); } catch { }
+                    try { await existingStreamConsumer.Task.ConfigureAwait(false); } catch { }
+                }
+
+                await WriteFrameAsync(connection, new Frame
+                {
+                    Type = MessageType.ConsumeSubscribe,
+                    CorrelationId = frame.CorrelationId,
+                    Payload = new { success = true, queue = consumerKey, unsubscribed = true, mode = "stream" }
+                });
+                return;
+            }
+
             await HandleStreamConsumeSubscribe(connection, frame, payload, streamQueue, cancellationToken);
             return;
         }
 
         // ── Classic queue path ────────────────────────────────────────────
+
+        // Unsubscribe from classic queue consumer
+        if (payload.Unsubscribe)
+        {
+            if (connection.ActiveConsumers.TryRemove(consumerKey, out var existingClassicConsumer))
+            {
+                try { existingClassicConsumer.Cts.Cancel(); } catch { }
+                try { await existingClassicConsumer.Task.ConfigureAwait(false); } catch { }
+            }
+
+            await WriteFrameAsync(connection, new Frame
+            {
+                Type = MessageType.ConsumeSubscribe,
+                CorrelationId = frame.CorrelationId,
+                Payload = new { success = true, queue = consumerKey, unsubscribed = true }
+            });
+            return;
+        }
 
         // Determine actual queue: group queue or source queue directly
         string actualQueueName;
@@ -844,15 +911,11 @@ public class TcpServer
 
         // Consumer key includes group so two groups on the same queue+connection
         // can coexist without canceling each other.
-        var consumerKey = !string.IsNullOrEmpty(payload.Group)
-            ? $"{payload.Queue}::grp:{payload.Group}"
-            : payload.Queue;
-
         // Cancel and await existing consumer for this consumer key if any
-        if (connection.ActiveConsumers.TryRemove(consumerKey, out var existing))
+        if (connection.ActiveConsumers.TryRemove(consumerKey, out var existingConsumer))
         {
-            try { existing.Cts.Cancel(); } catch { }
-            try { await existing.Task.ConfigureAwait(false); } catch { }
+            try { existingConsumer.Cts.Cancel(); } catch { }
+            try { await existingConsumer.Task.ConfigureAwait(false); } catch { }
         }
 
         // Immediately recover any in-flight messages for this queue that belong to
@@ -945,19 +1008,37 @@ public class TcpServer
         StreamQueue streamQueue,
         CancellationToken cancellationToken)
     {
-        // Consumer identity: group members share offset; solo consumers track by connection
+        // Group identity shares committed offsets; member identity is used for partition assignment.
         var consumerId = !string.IsNullOrEmpty(payload.Group)
             ? $"group:{payload.Group}"
             : $"conn:{connection.Id}";
 
-        var startOffset = streamQueue.ResolveStartOffset(consumerId, payload.Offset ?? -1);
+        var consumerKey = !string.IsNullOrEmpty(payload.Group)
+            ? $"{payload.Queue}::grp:{payload.Group}"
+            : payload.Queue;
 
-        // Cancel existing consumer for this queue
-        if (connection.ActiveConsumers.TryRemove(payload.Queue, out var existing))
+        if (connection.ActiveConsumers.TryRemove(consumerKey, out var existing))
         {
             try { existing.Cts.Cancel(); } catch { }
             try { await existing.Task.ConfigureAwait(false); } catch { }
         }
+
+        IReadOnlyList<int> assignedPartitions;
+        long groupGeneration = 0;
+        if (!string.IsNullOrEmpty(payload.Group))
+        {
+            groupGeneration = streamQueue.RegisterGroupMember(payload.Group, connection.Id);
+            assignedPartitions = streamQueue.GetAssignedPartitions(payload.Group, connection.Id);
+        }
+        else
+        {
+            assignedPartitions = Enumerable.Range(0, streamQueue.PartitionCount).ToArray();
+        }
+
+        var currentOffsets = streamQueue.ResolveStartOffsets(
+            consumerId,
+            payload.Offset ?? -1,
+            assignedPartitions);
 
         var consumerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -965,36 +1046,79 @@ public class TcpServer
         {
             Type = MessageType.ConsumeSubscribe,
             CorrelationId = frame.CorrelationId,
-            Payload = new { success = true, queue = payload.Queue, offset = startOffset, mode = "stream" }
+            Payload = new
+            {
+                success = true,
+                queue = consumerKey,
+                mode = "stream",
+                partitionCount = streamQueue.PartitionCount,
+                partitions = assignedPartitions,
+                groupGeneration
+            }
         });
 
         var consumerTask = Task.Run(async () =>
         {
-            var currentOffset = startOffset;
+            var offsets = new Dictionary<int, long>(currentOffsets);
+            var activePartitions = new HashSet<int>(assignedPartitions);
+            var currentGeneration = groupGeneration;
             try
             {
                 while (!consumerCts.Token.IsCancellationRequested)
                 {
-                    var entry = await streamQueue.ReadAtAsync(currentOffset, consumerCts.Token);
-                    if (entry == null) break;
-
-                    await WriteFrameAsync(connection, new Frame
+                    if (!string.IsNullOrEmpty(payload.Group))
                     {
-                        Type = MessageType.Deliver,
-                        CorrelationId = 0,
-                        Payload = new DeliverPayload
+                        var latestGeneration = streamQueue.GetGroupGeneration(payload.Group);
+                        if (latestGeneration != currentGeneration)
                         {
-                            Queue = payload.Queue,
-                            DeliveryTag = 0,
-                            BodyBase64 = Convert.ToBase64String(entry.Body.Span),
-                            Redelivered = false,
-                            MessageId = entry.MessageId,
-                            Offset = entry.Offset
+                            currentGeneration = latestGeneration;
+                            activePartitions = new HashSet<int>(streamQueue.GetAssignedPartitions(payload.Group, connection.Id));
+                            foreach (var partition in activePartitions)
+                            {
+                                if (!offsets.ContainsKey(partition))
+                                {
+                                    offsets[partition] = streamQueue.ResolveStartOffset(
+                                        consumerId,
+                                        payload.Offset ?? -1,
+                                        partition);
+                                }
+                            }
                         }
-                    });
+                    }
 
-                    currentOffset = entry.Offset + 1;
-                    _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero, false, source: "tcp-stream");
+                    var deliveredAny = false;
+                    foreach (var partition in activePartitions.OrderBy(p => p))
+                    {
+                        var partitionOffset = offsets.GetValueOrDefault(partition, streamQueue.ResolveStartOffset(consumerId, payload.Offset ?? -1, partition));
+                        var entry = streamQueue.TryReadAt(partition, partitionOffset);
+                        if (entry == null) continue;
+
+                        await WriteFrameAsync(connection, new Frame
+                        {
+                            Type = MessageType.Deliver,
+                            CorrelationId = 0,
+                            Payload = new DeliverPayload
+                            {
+                                Queue = consumerKey,
+                                DeliveryTag = 0,
+                                BodyBase64 = Convert.ToBase64String(entry.Body.Span),
+                                Redelivered = false,
+                                MessageId = entry.MessageId,
+                                Offset = entry.Offset,
+                                Partition = entry.Partition,
+                                PartitionOffset = entry.PartitionOffset
+                            }
+                        });
+
+                        offsets[partition] = entry.PartitionOffset + 1;
+                        _metrics.RecordMessageConsumed(payload.Queue, TimeSpan.Zero, false, source: "tcp-stream");
+                        deliveredAny = true;
+                    }
+
+                    if (!deliveredAny)
+                    {
+                        await streamQueue.WaitForNewEntryAsync(consumerCts.Token, TimeSpan.FromMilliseconds(200));
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -1003,9 +1127,18 @@ public class TcpServer
                 _logger.LogError(ex, "Error in stream consumer for queue {Queue} on connection {ConnectionId}",
                     payload.Queue, connection.Id);
             }
+            finally
+            {
+                if (!string.IsNullOrEmpty(payload.Group))
+                {
+                    streamQueue.UnregisterGroupMember(payload.Group, connection.Id);
+                    RefreshStreamLagMetrics(payload.Queue, streamQueue);
+                }
+            }
         });
 
-        connection.ActiveConsumers[payload.Queue] = (consumerCts, consumerTask);
+        connection.ActiveConsumers[consumerKey] = (consumerCts, consumerTask);
+        RefreshStreamLagMetrics(payload.Queue, streamQueue);
     }
 
     private async Task HandleAck(ClientConnection connection, Frame frame)
@@ -1257,13 +1390,32 @@ public class TcpServer
             ? $"group:{payload.Group}"
             : $"conn:{connection.Id}";
 
-        streamQueue.CommitOffset(consumerId, payload.Offset);
+        int partition;
+        long partitionOffset;
+        if (payload.Partition.HasValue)
+        {
+            partition = payload.Partition.Value;
+            partitionOffset = payload.PartitionOffset ?? payload.Offset;
+        }
+        else
+        {
+            streamQueue.TryDecodeOffset(payload.Offset, out partition, out partitionOffset);
+        }
+
+        streamQueue.CommitOffset(consumerId, partition, partitionOffset);
+        RefreshStreamLagMetrics(payload.Queue, streamQueue);
 
         await WriteFrameAsync(connection, new Frame
         {
             Type = MessageType.StreamAck,
             CorrelationId = frame.CorrelationId,
-            Payload = new { success = true, offset = payload.Offset }
+            Payload = new
+            {
+                success = true,
+                offset = payload.Offset,
+                partition,
+                partitionOffset
+            }
         });
     }
 
@@ -1275,7 +1427,16 @@ public class TcpServer
             or MessageType.Nack
             or MessageType.DeclareExchange
             or MessageType.BindQueue
-            or MessageType.UnbindQueue;
+            or MessageType.UnbindQueue
+            or MessageType.StreamAck;
+    }
+
+    private void RefreshStreamLagMetrics(string queueName, StreamQueue streamQueue)
+    {
+        _metrics.ReplaceStreamLagMetrics(
+            queueName,
+            streamQueue.GetGroupLagMetrics(),
+            streamQueue.GetPartitionLagMetrics());
     }
 
     private async Task HandleSetPrefetch(ClientConnection connection, Frame frame)

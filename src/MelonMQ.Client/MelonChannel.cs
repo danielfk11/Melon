@@ -41,7 +41,15 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         }
     }
 
-    public async Task PublishAsync(string queue, ReadOnlyMemory<byte> body, bool persistent = false, int? ttlMs = null, Guid? messageId = null, CancellationToken cancellationToken = default)
+    public async Task PublishAsync(
+        string queue,
+        ReadOnlyMemory<byte> body,
+        bool persistent = false,
+        int? ttlMs = null,
+        Guid? messageId = null,
+        string? partitionKey = null,
+        int? partition = null,
+        CancellationToken cancellationToken = default)
     {
         var payload = new
         {
@@ -49,7 +57,9 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             bodyBase64 = Convert.ToBase64String(body.Span),
             ttlMs = ttlMs,
             persistent = persistent,
-            messageId = messageId ?? Guid.NewGuid()
+            messageId = messageId ?? Guid.NewGuid(),
+            partitionKey = partitionKey,
+            partition = partition
         };
 
         var response = await _connection.SendRequestAsync(MessageType.Publish, payload, cancellationToken);
@@ -60,6 +70,15 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             throw new InvalidOperationException($"Failed to publish message: {errorMessage}");
         }
     }
+
+    public Task PublishAsync(
+        string queue,
+        ReadOnlyMemory<byte> body,
+        bool persistent,
+        int? ttlMs,
+        Guid? messageId,
+        CancellationToken cancellationToken)
+        => PublishAsync(queue, body, persistent, ttlMs, messageId, partitionKey: null, partition: null, cancellationToken);
 
     public async IAsyncEnumerable<IncomingMessage> ConsumeAsync(string queue, int prefetch = 100, string? group = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -86,10 +105,17 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             throw new InvalidOperationException($"Failed to subscribe to queue: {errorMessage}");
         }
 
-        // Read from delivery channel
-        await foreach (var message in deliveryChannel.Reader.ReadAllAsync(cancellationToken))
+        try
         {
-            yield return message;
+            // Read from delivery channel
+            await foreach (var message in deliveryChannel.Reader.ReadAllAsync(cancellationToken))
+            {
+                yield return message;
+            }
+        }
+        finally
+        {
+            await TryUnsubscribeAsync(queue, group);
         }
     }
 
@@ -179,6 +205,8 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         bool persistent = false,
         int? ttlMs = null,
         Guid? messageId = null,
+        string? partitionKey = null,
+        int? partition = null,
         CancellationToken cancellationToken = default)
     {
         var payload = new
@@ -188,12 +216,24 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             bodyBase64 = Convert.ToBase64String(body.Span),
             persistent,
             ttlMs,
-            messageId = messageId ?? Guid.NewGuid()
+            messageId = messageId ?? Guid.NewGuid(),
+            partitionKey,
+            partition
         };
         var response = await _connection.SendRequestAsync(MessageType.Publish, payload, cancellationToken);
         if (response.Type == MessageType.Error)
             throw new InvalidOperationException(response.Payload?.GetProperty("message").GetString() ?? "Failed to publish to exchange");
     }
+
+    public Task PublishToExchangeAsync(
+        string exchange,
+        string routingKey,
+        ReadOnlyMemory<byte> body,
+        bool persistent,
+        int? ttlMs,
+        Guid? messageId,
+        CancellationToken cancellationToken)
+        => PublishToExchangeAsync(exchange, routingKey, body, persistent, ttlMs, messageId, partitionKey: null, partition: null, cancellationToken);
 
     // ── Stream queues ─────────────────────────────────────────────────────────
 
@@ -202,6 +242,7 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         string name,
         bool durable = true,
         int maxMessages = 100_000,
+        int partitionCount = 1,
         long? maxAgeMs = null,
         CancellationToken cancellationToken = default)
     {
@@ -211,12 +252,21 @@ public class MelonChannel : IDisposable, IAsyncDisposable
             durable,
             mode = "stream",
             streamMaxLengthMessages = maxMessages,
-            streamMaxAgeMs = maxAgeMs
+            streamMaxAgeMs = maxAgeMs,
+            streamPartitionCount = partitionCount
         };
         var response = await _connection.SendRequestAsync(MessageType.DeclareQueue, payload, cancellationToken);
         if (response.Type == MessageType.Error)
             throw new InvalidOperationException(response.Payload?.GetProperty("message").GetString() ?? "Failed to declare stream queue");
     }
+
+    public Task DeclareStreamQueueAsync(
+        string name,
+        bool durable,
+        int maxMessages,
+        long? maxAgeMs,
+        CancellationToken cancellationToken)
+        => DeclareStreamQueueAsync(name, durable, maxMessages, partitionCount: 1, maxAgeMs, cancellationToken);
 
     /// <summary>
     /// Subscribes to a stream queue, yielding messages starting from the specified offset.
@@ -229,16 +279,26 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         string? group = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var deliveryChannel = _connection.GetOrCreateDeliveryChannel(queue);
+        var consumerKey = !string.IsNullOrEmpty(group)
+            ? $"{queue}::grp:{group}"
+            : queue;
+        var deliveryChannel = _connection.GetOrCreateDeliveryChannel(consumerKey);
 
         var subscribePayload = new { queue, group, offset = startOffset };
         var response = await _connection.SendRequestAsync(MessageType.ConsumeSubscribe, subscribePayload, cancellationToken);
         if (response.Type == MessageType.Error)
             throw new InvalidOperationException(response.Payload?.GetProperty("message").GetString() ?? "Failed to subscribe to stream");
 
-        await foreach (var message in deliveryChannel.Reader.ReadAllAsync(cancellationToken))
+        try
         {
-            yield return message;
+            await foreach (var message in deliveryChannel.Reader.ReadAllAsync(cancellationToken))
+            {
+                yield return message;
+            }
+        }
+        finally
+        {
+            await TryUnsubscribeAsync(queue, group);
         }
     }
 
@@ -246,13 +306,26 @@ public class MelonChannel : IDisposable, IAsyncDisposable
     /// Commits the stream offset for this consumer (or consumer group).
     /// Should be called after successfully processing a stream message.
     /// </summary>
-    public async Task StreamAckAsync(string queue, long offset, string? group = null, CancellationToken cancellationToken = default)
+    public async Task StreamAckAsync(
+        string queue,
+        long offset,
+        string? group = null,
+        int? partition = null,
+        long? partitionOffset = null,
+        CancellationToken cancellationToken = default)
     {
-        var payload = new { queue, offset, group };
+        var payload = new { queue, offset, group, partition, partitionOffset };
         var response = await _connection.SendRequestAsync(MessageType.StreamAck, payload, cancellationToken);
         if (response.Type == MessageType.Error)
             throw new InvalidOperationException(response.Payload?.GetProperty("message").GetString() ?? "Stream ACK failed");
     }
+
+    public Task StreamAckAsync(
+        string queue,
+        long offset,
+        string? group,
+        CancellationToken cancellationToken)
+        => StreamAckAsync(queue, offset, group, partition: null, partitionOffset: null, cancellationToken);
 
     public void Dispose()
     {
@@ -265,5 +338,23 @@ public class MelonChannel : IDisposable, IAsyncDisposable
         if (_disposed) return ValueTask.CompletedTask;
         _disposed = true;
         return ValueTask.CompletedTask;
+    }
+
+    private async Task TryUnsubscribeAsync(string queue, string? group)
+    {
+        if (_disposed)
+            return;
+
+        try
+        {
+            var unsubscribePayload = new { queue, group, unsubscribe = true };
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+            cts.CancelAfter(TimeSpan.FromSeconds(2));
+            _ = await _connection.SendRequestAsync(MessageType.ConsumeSubscribe, unsubscribePayload, cts.Token);
+        }
+        catch
+        {
+            // Best effort: unsubscribing should not mask consumer iteration result.
+        }
     }
 }

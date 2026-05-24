@@ -96,7 +96,7 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
     },
     "Observability": {
       "ServiceName": "MelonMQ.Broker",
-      "ServiceVersion": "1.0.0",
+      "ServiceVersion": "1.1.0",
       "Prometheus": {
         "Enabled": true,
         "EndpointPath": "/metrics",
@@ -187,7 +187,7 @@ pbkdf2-sha256$iterations$saltBase64$hashBase64
 | Chave | Default | O que faz |
 |---|---:|---|
 | ServiceName | MelonMQ.Broker | Nome do recurso OTEL |
-| ServiceVersion | 1.0.0 | Versao do recurso OTEL |
+| ServiceVersion | 1.1.0 | Versao do recurso OTEL |
 | Prometheus.Enabled | true | Exponibiliza endpoint de metricas |
 | Prometheus.EndpointPath | /metrics | Rota Prometheus |
 | Prometheus.RequireAdminApiKey | false | Exige X-Api-Key no endpoint de metricas |
@@ -368,8 +368,8 @@ Frame:
 | Tipo | Direcao | Payload de entrada |
 |---|---|---|
 | AUTH | C->S | { username, password } |
-| DECLAREQUEUE | C->S | { queue, durable, exactlyOnce, deadLetterQueue, defaultTtlMs, mode, streamMaxLengthMessages, streamMaxAgeMs } |
-| PUBLISH | C->S | { queue, exchange, routingKey, bodyBase64, ttlMs, persistent, messageId } |
+| DECLAREQUEUE | C->S | { queue, durable, exactlyOnce, deadLetterQueue, defaultTtlMs, mode, streamMaxLengthMessages, streamMaxAgeMs, streamPartitionCount } |
+| PUBLISH | C->S | { queue, exchange, routingKey, partitionKey, partition, bodyBase64, ttlMs, persistent, messageId } |
 | CONSUMESUBSCRIBE | C->S | { queue, group, offset } |
 | ACK | C->S | { deliveryTag } |
 | NACK | C->S | { deliveryTag, requeue } |
@@ -377,9 +377,9 @@ Frame:
 | DECLAREEXCHANGE | C->S | { exchange, type, durable } |
 | BINDQUEUE | C->S | { exchange, queue, routingKey } |
 | UNBINDQUEUE | C->S | { exchange, queue, routingKey } |
-| STREAMACK | C->S | { queue, offset, group } |
+| STREAMACK | C->S | { queue, offset, group, partition, partitionOffset } |
 | HEARTBEAT | C<->S | {} |
-| DELIVER | S->C | { queue, deliveryTag, bodyBase64, redelivered, messageId, offset } |
+| DELIVER | S->C | { queue, deliveryTag, bodyBase64, redelivered, messageId, offset, partition, partitionOffset } |
 
 Observacoes importantes:
 
@@ -405,7 +405,7 @@ dotnet add package MelonMQ.Broker --prerelease
 Se quiser travar em uma versao especifica:
 
 ```bash
-dotnet add package MelonMQ.Client --version 1.0.2
+dotnet add package MelonMQ.Client --version 1.1.0
 ```
 
 Para conferir os pacotes instalados no projeto atual:
@@ -418,16 +418,16 @@ Opcional (edicao manual do .csproj):
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="MelonMQ.Client" Version="1.0.2" />
-  <PackageReference Include="MelonMQ.Protocol" Version="1.0.2" />
+  <PackageReference Include="MelonMQ.Client" Version="1.1.0" />
+  <PackageReference Include="MelonMQ.Protocol" Version="1.1.0" />
 </ItemGroup>
 ```
 
 ### Versao sem confusao (guia rapido)
 
-- **Mudar versao do pacote:** `./scripts/set-version.sh 1.0.2` (sem `v`)
-- **Version no arquivo:** `Directory.Build.props` em `<Version>1.0.2</Version>`
-- **Tag git da release:** `v1.0.1` (com `v`)
+- **Mudar versao do pacote:** `./scripts/set-version.sh 1.1.0` (sem `v`)
+- **Version no arquivo:** `Directory.Build.props` em `<Version>1.1.0</Version>`
+- **Tag git da release:** `v1.1.0` (com `v`)
 
 API publica atual:
 
@@ -490,13 +490,18 @@ await channel.PublishToExchangeAsync(
 Exemplo stream:
 
 ```csharp
-await channel.DeclareStreamQueueAsync("audit.events", durable: true, maxMessages: 10000);
-await channel.PublishAsync("audit.events", System.Text.Encoding.UTF8.GetBytes("entry"));
+await channel.DeclareStreamQueueAsync("audit.events", durable: true, maxMessages: 10000, partitionCount: 4);
+await channel.PublishAsync("audit.events", System.Text.Encoding.UTF8.GetBytes("entry"), partitionKey: "tenant-42");
 
 await foreach (var msg in channel.ConsumeStreamAsync("audit.events", startOffset: 0, group: "analytics"))
 {
     if (msg.Offset.HasValue)
-        await channel.StreamAckAsync("audit.events", msg.Offset.Value, group: "analytics");
+        await channel.StreamAckAsync(
+            "audit.events",
+            msg.Offset.Value,
+            group: "analytics",
+            partition: msg.Partition,
+            partitionOffset: msg.PartitionOffset);
 }
 ```
 
@@ -564,6 +569,9 @@ Se preferir autenticar explicitamente apos conectar, use:
 - Publish para stream duravel so retorna sucesso apos a entrada ser gravada e confirmada com flush/fsync.
 - Offsets de consumidor/grupo sao persistidos para streams duraveis e retomados apos restart.
 - Em streams nao duraveis, offsets continuam em memoria durante a vida do processo.
+- Streams aceitam `partitionKey` (ou `partition` explicito) para roteamento consistente por chave.
+- Consumer groups em stream fazem rebalance automatico por particao via hashing consistente entre membros ativos.
+- Lag por particao e por grupo e exposto em metricas OTel/Prometheus (`melonmq_stream_group_partition_lag`, `melonmq_stream_partition_lag_max`).
 
 ### Exchanges
 
@@ -710,7 +718,7 @@ Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para ev
 
 ### Fase 1 - Escala e previsibilidade
 
-- [ ] Task: Streams particionados e rebalance automatica de grupos
+- [x] Task: Streams particionados e rebalance automatica de grupos
   Definicao de pronto:
   - particionamento por chave com distribuicao consistente
   - rebalance de grupos com retomada de offset sem duplicacao alem da semantica declarada

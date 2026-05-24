@@ -181,6 +181,7 @@ public class QueueManager : IQueueManager, IDisposable
         string name,
         bool durable,
         int maxMessages = 100_000,
+        int partitionCount = 1,
         long? maxAgeMs = null)
     {
         ValidateQueueName(name);
@@ -191,9 +192,14 @@ public class QueueManager : IQueueManager, IDisposable
                 durable,
                 maxMessages,
                 maxAgeMs,
+                partitionCount,
                 _dataDirectory,
                 _loggerFactory.CreateLogger<StreamQueue>());
-            _logger.LogInformation("Declared stream queue '{Name}' (durable: {Durable})", name, durable);
+            _logger.LogInformation(
+                "Declared stream queue '{Name}' (durable: {Durable}, partitions: {Partitions})",
+                name,
+                durable,
+                partitionCount);
             return q;
         });
     }

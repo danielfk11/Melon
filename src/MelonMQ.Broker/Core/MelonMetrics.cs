@@ -54,10 +54,27 @@ public class MelonMetrics
     
     private readonly ConcurrentDictionary<string, long> _counters = new();
     private readonly ConcurrentDictionary<string, (long Total, int Count)> _timings = new();
+    private readonly ConcurrentDictionary<string, long> _streamGroupPartitionLag = new();
+    private readonly ConcurrentDictionary<string, long> _streamPartitionLag = new();
+    private readonly ObservableGauge<long> _streamGroupPartitionLagGauge;
+    private readonly ObservableGauge<long> _streamPartitionLagGauge;
     
     public static MelonMetrics Instance { get; } = new();
 
-    public MelonMetrics() { }
+    public MelonMetrics()
+    {
+        _streamGroupPartitionLagGauge = Meter.CreateObservableGauge<long>(
+            "melonmq_stream_group_partition_lag",
+            ObserveStreamGroupPartitionLag,
+            unit: "messages",
+            description: "Current lag by stream queue/group/partition.");
+
+        _streamPartitionLagGauge = Meter.CreateObservableGauge<long>(
+            "melonmq_stream_partition_lag_max",
+            ObserveStreamPartitionLag,
+            unit: "messages",
+            description: "Current max lag by stream queue partition across groups.");
+    }
 
     public void IncrementCounter(string name, long value = 1)
     {
@@ -104,6 +121,16 @@ public class MelonMetrics
                 result[$"timing.{timing.Key}.avg_ms"] = (double)timing.Value.Total / timing.Value.Count;
                 result[$"timing.{timing.Key}.count"] = timing.Value.Count;
             }
+        }
+
+        foreach (var lag in _streamGroupPartitionLag)
+        {
+            result[$"lag.stream.group_partition.{lag.Key}"] = lag.Value;
+        }
+
+        foreach (var lag in _streamPartitionLag)
+        {
+            result[$"lag.stream.partition.{lag.Key}"] = lag.Value;
         }
 
         return result;
@@ -203,6 +230,68 @@ public class MelonMetrics
         IncrementCounter("cluster.leader", isLeader ? 1 : 0);
         IncrementCounter("cluster.quorum", hasQuorum ? 1 : 0);
         IncrementCounter("cluster.active_nodes", activeNodes);
+    }
+
+    public void ReplaceStreamLagMetrics(
+        string queueName,
+        IReadOnlyCollection<StreamGroupLag> groupLagMetrics,
+        IReadOnlyCollection<StreamPartitionLag> partitionLagMetrics)
+    {
+        var groupPrefix = $"{queueName}|";
+        foreach (var key in _streamGroupPartitionLag.Keys.Where(k => k.StartsWith(groupPrefix, StringComparison.Ordinal)).ToArray())
+            _streamGroupPartitionLag.TryRemove(key, out _);
+
+        foreach (var metric in groupLagMetrics)
+            _streamGroupPartitionLag[$"{queueName}|{metric.Group}|{metric.Partition}"] = metric.Lag;
+
+        foreach (var key in _streamPartitionLag.Keys.Where(k => k.StartsWith(groupPrefix, StringComparison.Ordinal)).ToArray())
+            _streamPartitionLag.TryRemove(key, out _);
+
+        foreach (var metric in partitionLagMetrics)
+            _streamPartitionLag[$"{queueName}|{metric.Partition}"] = metric.MaxGroupLag;
+
+        IncrementCounter($"streams.lag.updates.queue.{queueName}");
+    }
+
+    public IReadOnlyDictionary<string, long> GetStreamGroupPartitionLagSnapshot() =>
+        new Dictionary<string, long>(_streamGroupPartitionLag);
+
+    public IReadOnlyDictionary<string, long> GetStreamPartitionLagSnapshot() =>
+        new Dictionary<string, long>(_streamPartitionLag);
+
+    private IEnumerable<Measurement<long>> ObserveStreamGroupPartitionLag()
+    {
+        foreach (var item in _streamGroupPartitionLag)
+        {
+            var parts = item.Key.Split('|');
+            if (parts.Length != 3) continue;
+            if (!int.TryParse(parts[2], out var partition)) continue;
+            yield return new Measurement<long>(
+                item.Value,
+                new TagList
+                {
+                    { "queue", parts[0] },
+                    { "group", parts[1] },
+                    { "partition", partition }
+                });
+        }
+    }
+
+    private IEnumerable<Measurement<long>> ObserveStreamPartitionLag()
+    {
+        foreach (var item in _streamPartitionLag)
+        {
+            var parts = item.Key.Split('|');
+            if (parts.Length != 2) continue;
+            if (!int.TryParse(parts[1], out var partition)) continue;
+            yield return new Measurement<long>(
+                item.Value,
+                new TagList
+                {
+                    { "queue", parts[0] },
+                    { "partition", partition }
+                });
+        }
     }
 }
 

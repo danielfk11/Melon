@@ -38,6 +38,8 @@ public class DeclareQueuePayload
     public int? StreamMaxLengthMessages { get; set; }
     /// <summary>Stream retention: max age in milliseconds (stream mode only)</summary>
     public long? StreamMaxAgeMs { get; set; }
+    /// <summary>Number of stream partitions (stream mode only). Defaults to 1.</summary>
+    public int? StreamPartitionCount { get; set; }
 }
 
 public class PublishPayload
@@ -51,6 +53,10 @@ public class PublishPayload
     public string? Exchange { get; set; }
     /// <summary>Routing key used with exchange routing.</summary>
     public string? RoutingKey { get; set; }
+    /// <summary>Stream partition key for deterministic partitioning.</summary>
+    public string? PartitionKey { get; set; }
+    /// <summary>Explicit stream partition override (0-based).</summary>
+    public int? Partition { get; set; }
 }
 
 public class ConsumeSubscribePayload
@@ -60,6 +66,8 @@ public class ConsumeSubscribePayload
     public string? Group { get; set; }
     /// <summary>Stream offset to start consuming from: -1 = latest (default), 0 = beginning, N = specific offset. Only used for stream queues.</summary>
     public long? Offset { get; set; }
+    /// <summary>When true, cancels an existing subscription instead of creating one.</summary>
+    public bool Unsubscribe { get; set; }
 }
 
 public class DeliverPayload
@@ -71,6 +79,10 @@ public class DeliverPayload
     public Guid MessageId { get; set; }
     /// <summary>Stream offset. Only populated for stream queue deliveries.</summary>
     public long? Offset { get; set; }
+    /// <summary>Stream partition id. Only populated for stream queue deliveries.</summary>
+    public int? Partition { get; set; }
+    /// <summary>Offset inside the partition. Only populated for stream queue deliveries.</summary>
+    public long? PartitionOffset { get; set; }
 }
 
 public class AckPayload
@@ -123,4 +135,8 @@ public class StreamAckPayload
     public long Offset { get; set; }
     /// <summary>Group name (if consuming as part of a consumer group).</summary>
     public string? Group { get; set; }
+    /// <summary>Partition id for the committed stream entry (optional).</summary>
+    public int? Partition { get; set; }
+    /// <summary>Offset inside the partition (optional).</summary>
+    public long? PartitionOffset { get; set; }
 }
