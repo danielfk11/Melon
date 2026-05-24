@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
-    <!-- NuGet package version (no 'v' prefix). Example: 1.0.1 -->
-    <Version>1.0.1</Version>
+    <!-- NuGet package version (no 'v' prefix). Example: 1.0.2 -->
+    <Version>1.0.2</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>

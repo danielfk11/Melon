@@ -405,7 +405,7 @@ dotnet add package MelonMQ.Broker --prerelease
 Se quiser travar em uma versao especifica:
 
 ```bash
-dotnet add package MelonMQ.Client --version 1.0.1
+dotnet add package MelonMQ.Client --version 1.0.2
 ```
 
 Para conferir os pacotes instalados no projeto atual:
@@ -418,15 +418,15 @@ Opcional (edicao manual do .csproj):
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="MelonMQ.Client" Version="1.0.1" />
-  <PackageReference Include="MelonMQ.Protocol" Version="1.0.1" />
+  <PackageReference Include="MelonMQ.Client" Version="1.0.2" />
+  <PackageReference Include="MelonMQ.Protocol" Version="1.0.2" />
 </ItemGroup>
 ```
 
 ### Versao sem confusao (guia rapido)
 
-- **Mudar versao do pacote:** `./scripts/set-version.sh 1.0.1` (sem `v`)
-- **Version no arquivo:** `Directory.Build.props` em `<Version>1.0.1</Version>`
+- **Mudar versao do pacote:** `./scripts/set-version.sh 1.0.2` (sem `v`)
+- **Version no arquivo:** `Directory.Build.props` em `<Version>1.0.2</Version>`
 - **Tag git da release:** `v1.0.1` (com `v`)
 
 API publica atual:
@@ -640,13 +640,6 @@ Recomendacao:
 Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para evoluir de preview tecnica para release estavel.
 
 ### Fase 0 - Gate para release estavel (critico)
-
-- [ ] Task: Consenso de cluster forte (log de consenso + eleicao robusta)
-  Definicao de pronto:
-  - eleicao automatica de lider sem split-brain em cenarios de particao de rede
-  - replicacao com commit quorum e sem confirmacao de escrita em no follower isolado
-  - testes de caos cobrindo perda de lider, perda de follower e reconvergencia
-  Mitigacao atual: usar 3 nos, SharedKey obrigatoria, Consistency=quorum e RequireQuorumForWrites=true.
 
 - [ ] Task: Rolling upgrade N -> N+1 sem perda de dados
   Definicao de pronto:

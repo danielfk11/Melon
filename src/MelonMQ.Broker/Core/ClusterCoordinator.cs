@@ -8,9 +8,14 @@ namespace MelonMQ.Broker.Core;
 
 public sealed record ClusterNodeInfo(string NodeId, string NodeAddress, long LastSeenUnixMs);
 
-public sealed record ClusterPingRequest(string NodeId, string NodeAddress);
+public sealed record ClusterPingRequest(string NodeId, string NodeAddress, long ElectionTerm, string? LeaderNodeId);
 
-public sealed record ClusterPingResponse(string NodeId, string NodeAddress, List<ClusterNodeInfo> KnownNodes);
+public sealed record ClusterPingResponse(
+    string NodeId,
+    string NodeAddress,
+    List<ClusterNodeInfo> KnownNodes,
+    long ElectionTerm,
+    string? LeaderNodeId);
 
 public sealed record ClusterJoinRequest(string NodeId, string NodeAddress);
 
@@ -80,6 +85,7 @@ public sealed record ClusterStatus(
     string NodeAddress,
     bool IsLeader,
     string? LeaderNodeId,
+    long ElectionTerm,
     bool HasWriteQuorum,
     string Consistency,
     int ActiveNodes,
@@ -105,6 +111,7 @@ public class ClusterCoordinator
     private readonly ConcurrentDictionary<string, byte> _expectedNodeAddresses = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _leaderNodeId;
+    private long _electionTerm = 1;
 
     public ClusterCoordinator(
         MelonMQConfiguration config,
@@ -144,6 +151,8 @@ public class ClusterCoordinator
     public string NodeAddress => NormalizeAddress(_config.Cluster.NodeAddress);
 
     public string? LeaderNodeId => _leaderNodeId;
+
+    public long ElectionTerm => _electionTerm;
 
     public bool IsLeader =>
         Enabled &&
@@ -206,6 +215,7 @@ public class ClusterCoordinator
             NodeAddress,
             IsLeader,
             LeaderNodeId,
+            ElectionTerm,
             HasWriteQuorum,
             _config.Cluster.Consistency,
             ActiveNodeCount,
@@ -251,6 +261,12 @@ public class ClusterCoordinator
             });
 
         _expectedNodeAddresses[normalizedAddress] = 0;
+        RecomputeLeadership();
+    }
+
+    public void ApplyElectionHint(long electionTerm, string? leaderNodeId)
+    {
+        ObserveRemoteLeadership(electionTerm, leaderNodeId);
         RecomputeLeadership();
     }
 
@@ -592,7 +608,7 @@ public class ClusterCoordinator
         {
             var client = _httpClientFactory.CreateClient("cluster");
             using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(targetAddress, "/cluster/ping"));
-            request.Content = JsonContent.Create(new ClusterPingRequest(NodeId, NodeAddress));
+            request.Content = JsonContent.Create(new ClusterPingRequest(NodeId, NodeAddress, ElectionTerm, LeaderNodeId));
             if (!string.IsNullOrWhiteSpace(_config.Cluster.SharedKey))
             {
                 request.Headers.TryAddWithoutValidation(ClusterApiKeyHeaderName, _config.Cluster.SharedKey);
@@ -610,6 +626,7 @@ public class ClusterCoordinator
                 return;
             }
 
+            ObserveRemoteLeadership(pingResponse.ElectionTerm, pingResponse.LeaderNodeId);
             RegisterOrUpdateNode(pingResponse.NodeId, pingResponse.NodeAddress);
             foreach (var node in pingResponse.KnownNodes)
             {
@@ -664,8 +681,67 @@ public class ClusterCoordinator
             .OrderBy(n => n.NodeId, StringComparer.Ordinal)
             .ToList();
 
-        _leaderNodeId = activeNodes.Count > 0 ? activeNodes[0].NodeId : NodeId;
+        var previousLeader = _leaderNodeId;
+        var quorumAvailable = HasQuorumFromActive(activeNodes.Count);
+        var nextLeader = activeNodes.Count > 0 ? activeNodes[0].NodeId : NodeId;
+
+        if (_config.Cluster.RequireQuorumForWrites && !quorumAvailable && !IsSingleNodeCluster)
+        {
+            nextLeader = null;
+        }
+
+        _leaderNodeId = nextLeader;
+        if (!string.Equals(previousLeader, _leaderNodeId, StringComparison.Ordinal))
+        {
+            _electionTerm++;
+            _logger.LogInformation(
+                "Cluster election updated. term={Term} leader={LeaderNodeId} activeNodes={ActiveNodes} quorum={HasQuorum}",
+                _electionTerm,
+                _leaderNodeId ?? "none",
+                activeNodes.Count,
+                quorumAvailable);
+        }
+
         _metrics.RecordClusterLeadership(IsLeader, HasWriteQuorum, activeNodes.Count);
+    }
+
+    private void ObserveRemoteLeadership(long remoteTerm, string? remoteLeaderNodeId)
+    {
+        if (!Enabled || remoteTerm <= 0)
+        {
+            return;
+        }
+
+        var normalizedLeader = string.IsNullOrWhiteSpace(remoteLeaderNodeId)
+            ? null
+            : remoteLeaderNodeId.Trim();
+
+        if (remoteTerm > _electionTerm)
+        {
+            _electionTerm = remoteTerm;
+            if (normalizedLeader is not null)
+            {
+                _leaderNodeId = normalizedLeader;
+            }
+        }
+        else if (remoteTerm == _electionTerm && normalizedLeader is not null)
+        {
+            if (string.IsNullOrWhiteSpace(_leaderNodeId) ||
+                string.CompareOrdinal(normalizedLeader, _leaderNodeId) < 0)
+            {
+                _leaderNodeId = normalizedLeader;
+            }
+        }
+    }
+
+    private bool HasQuorumFromActive(int activeNodeCount)
+    {
+        if (!Enabled || !_config.Cluster.RequireQuorumForWrites)
+        {
+            return true;
+        }
+
+        return activeNodeCount >= ComputeMajority(ExpectedClusterSize);
     }
 
     private static int ComputeMajority(int totalNodes)

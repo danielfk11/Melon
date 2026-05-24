@@ -30,7 +30,7 @@ fi
 
 if [[ "${PROP_VERSION}" == v* ]]; then
   echo "Invalid Directory.Build.props <Version>: '${PROP_VERSION}'"
-  echo "Use version without 'v' prefix. Example: 1.0.1"
+  echo "Use version without 'v' prefix. Example: 1.0.2"
   exit 1
 fi
 

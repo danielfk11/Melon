@@ -9,10 +9,11 @@ namespace MelonMQ.Tests.Unit.Core;
 public class ClusterCoordinatorTests
 {
     [Fact]
-    public void ElectionAndQuorum_ShouldFailoverAndRejectMinorityWrites()
+    public void ElectionAndQuorum_ShouldHandleLeaderLossFollowerLossAndReconvergence()
     {
         var config = CreateClusterConfig();
         var coordinator = CreateCoordinator(config, _ => new HttpResponseMessage(HttpStatusCode.OK));
+        var initialTerm = coordinator.ElectionTerm;
 
         coordinator.RegisterOrUpdateNode("node-a", "http://node-a:9090");
         coordinator.RegisterOrUpdateNode("node-c", "http://node-c:9090");
@@ -20,6 +21,12 @@ public class ClusterCoordinatorTests
         coordinator.LeaderNodeId.Should().Be("node-a");
         coordinator.IsLeader.Should().BeFalse();
         coordinator.HasWriteQuorum.Should().BeTrue();
+        coordinator.ElectionTerm.Should().BeGreaterThan(initialTerm);
+
+        coordinator.RemoveNode("node-c");
+        coordinator.LeaderNodeId.Should().Be("node-a", "follower loss must keep leader stable when quorum remains");
+        coordinator.HasWriteQuorum.Should().BeTrue();
+        coordinator.RegisterOrUpdateNode("node-c", "http://node-c:9090");
 
         coordinator.RemoveNode("node-a");
         coordinator.LeaderNodeId.Should().Be("node-b");
@@ -28,11 +35,17 @@ public class ClusterCoordinatorTests
 
         coordinator.RemoveNode("node-c");
         coordinator.HasWriteQuorum.Should().BeFalse();
+        coordinator.LeaderNodeId.Should().BeNull("no node should claim leadership when quorum is lost");
         coordinator.IsLeader.Should().BeFalse("node must not accept writes without quorum in split-brain scenario");
 
         var canWrite = coordinator.CanAcceptWrites(out var reason);
         canWrite.Should().BeFalse();
         reason.Should().Contain("Write quorum unavailable");
+
+        coordinator.RegisterOrUpdateNode("node-a", "http://node-a:9090");
+        coordinator.LeaderNodeId.Should().Be("node-a");
+        coordinator.HasWriteQuorum.Should().BeTrue("quorum should be restored after leader reconvergence");
+        coordinator.IsLeader.Should().BeFalse();
     }
 
     [Fact]

@@ -195,11 +195,14 @@ app.MapPost("/cluster/ping", (ClusterPingRequest request, ClusterCoordinator clu
     if (!clusterCoordinator.ValidateClusterRequest(context))
         return Results.Unauthorized();
 
+    clusterCoordinator.ApplyElectionHint(request.ElectionTerm, request.LeaderNodeId);
     clusterCoordinator.RegisterOrUpdateNode(request.NodeId, request.NodeAddress);
     var response = new ClusterPingResponse(
         clusterCoordinator.NodeId,
         clusterCoordinator.NodeAddress,
-        clusterCoordinator.GetKnownNodes().ToList());
+        clusterCoordinator.GetKnownNodes().ToList(),
+        clusterCoordinator.ElectionTerm,
+        clusterCoordinator.LeaderNodeId);
     return Results.Ok(response);
 });
 
