@@ -1,0 +1,38 @@
+name: reliability-soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Soak profile duration"
+        required: true
+        default: "24h"
+        type: choice
+        options:
+          - 24h
+          - 72h
+
+jobs:
+  soak:
+    runs-on: self-hosted
+    timeout-minutes: 4500
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore MelonMQ.sln --nologo
+
+      - name: Build
+        run: dotnet build MelonMQ.sln --configuration Release --no-restore --nologo
+
+      - name: Run soak profile
+        env:
+          MELONMQ_SOAK_PROFILE: ${{ inputs.profile }}
+        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "FullyQualifiedName~ReliabilitySoakProfilesTests"

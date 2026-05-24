@@ -63,6 +63,7 @@ public class ReliabilityChaosAndSloTests
         const string queueName = "slo-roundtrip";
         const int totalMessages = 300;
         const double p95BudgetMs = 2500;
+        const double p99BudgetMs = 4000;
 
         await using var host = new TestBrokerHost(dataDir);
         await host.StartAsync();
@@ -114,8 +115,11 @@ public class ReliabilityChaosAndSloTests
         latencies.Count.Should().Be(totalMessages);
         var sorted = latencies.OrderBy(x => x).ToArray();
         var p95Index = (int)Math.Ceiling(sorted.Length * 0.95) - 1;
+        var p99Index = (int)Math.Ceiling(sorted.Length * 0.99) - 1;
         var p95 = sorted[Math.Max(0, p95Index)];
+        var p99 = sorted[Math.Max(0, p99Index)];
 
         p95.Should().BeLessThanOrEqualTo((long)p95BudgetMs);
+        p99.Should().BeLessThanOrEqualTo((long)p99BudgetMs);
     }
 }

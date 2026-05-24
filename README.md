@@ -621,7 +621,76 @@ Cobertura atual inclui unitarios e integracao para:
 - seguranca HTTP por API key
 - cluster (leader/quorum)
 - observabilidade Prometheus/OTLP
-- cenarios de confiabilidade (restart/recuperacao duravel) e SLO local de round-trip (p95)
+- cenarios de confiabilidade (restart/recuperacao duravel) e SLO local de round-trip (p95/p99)
+- rolling upgrade de broker com preservacao de dados duraveis e rollback sem replay indevido
+- suite de caos no pipeline (kill -9, rede parcial, disco lento)
+- perfil de soak 24h/72h com validacao automatizada por workflow dedicado
+
+## Compatibilidade broker x cliente (.NET)
+
+Politica para release estavel (mesma major/minor):
+
+| Broker | Cliente .NET | Status | Evidencia |
+|---|---|---|---|
+| N (1.0.x) | N (1.0.x) | suportado | suite de integracao padrao |
+| N+1 (1.0.x patch) | N (1.0.x) | suportado para rolling upgrade de patch | teste `RollingUpgradeCompatibilityTests.RollingUpgradeNToNPlus1_WithRollback_ShouldPreserveDurableData` |
+| N+1 (1.0.x patch) | N+1 (1.0.x patch) | suportado | suite de integracao padrao |
+
+Escopo atual da matriz:
+
+- compatibilidade garantida para upgrades de **patch** dentro da serie `1.0.x`
+- para upgrade de **minor/major**, tratar como migracao planejada com validacao dedicada
+
+## Runbook de rolling upgrade e rollback (N -> N+1)
+
+Pre-checks:
+
+1. validar backup (`scripts/dr-backup.sh`) e saude (`/health`, `/cluster/status`, `/stats`)
+2. confirmar cluster em quorum (`Consistency=quorum`, `RequireQuorumForWrites=true`)
+3. confirmar que `DataDirectory` de cada no esta persistente e preservado no deploy
+
+Rolling upgrade (3 nos, sem perda de dados):
+
+1. escolher um follower, drenar workload sensivel e parar o processo desse no
+2. publicar binario/config N+1 **sem alterar o DataDirectory**
+3. subir o no e validar reconvergencia no `/cluster/status` (no ativo, quorum true)
+4. repetir para o segundo follower
+5. atualizar o lider por ultimo e validar quorum/reconvergencia novamente
+6. executar smoke test de publish/consume e verificar metricas/lag/erros
+
+Rollback (se houver regressao):
+
+1. parar apenas o no regressivo
+2. reimplantar binario N (anterior) mantendo o mesmo `DataDirectory`
+3. subir o no, validar quorum/reconvergencia e repetir no sentido inverso se necessario
+4. reexecutar smoke test de publish/consume e confirmar ausencia de replay indevido
+
+Validacao automatizada (CI):
+
+- workflow `.github/workflows/ci.yml` executa o gate:
+  - `dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --filter "FullyQualifiedName~RollingUpgradeCompatibilityTests"`
+
+## Suite de confiabilidade para producao (chaos + soak)
+
+Chaos suite no pipeline principal (`.github/workflows/ci.yml`):
+
+- `ReliabilityChaosPipelineTests.ChaosKill9_ShouldRecoverDurableMessages_AfterHardCrash`
+- `ReliabilityChaosPipelineTests.ChaosSlowDisk_ShouldPreserveDurableQueue_AfterRestart`
+- `ClusterCoordinatorTests.QuorumConsistency_ShouldRequireMajorityReplication` (rede parcial / quorum)
+
+Soak profile (24h/72h):
+
+- workflow dedicado `.github/workflows/reliability-soak.yml` (manual dispatch)
+- perfis disponiveis: `24h` e `72h`
+- teste executado: `ReliabilitySoakProfilesTests.SoakDurableQueueAndStream_ShouldRunConfiguredProfile_WithoutMessageLoss`
+
+## SLOs basicos publicados
+
+| SLO | Meta | Como e validado |
+|---|---|---|
+| Disponibilidade | manter servico apto a retomar operacao apos falhas de caos (kill -9/rede parcial/disco lento) sem perda de operacao de escrita com quorum | `ReliabilityChaosPipelineTests` no CI |
+| Latencia local round-trip | p95 <= 2500ms e p99 <= 4000ms | `ReliabilityChaosAndSloTests.QueueRoundTrip_ShouldStayWithinLocalSloBudget` |
+| Durabilidade | zero perda de mensagem em filas/streams duraveis nos perfis de soak | `ReliabilitySoakProfilesTests` com perfis `24h`/`72h` |
 
 ## DR operacional (backup/restore)
 
@@ -638,22 +707,6 @@ Recomendacao:
 ## Roadmap tecnico (lacunas atuais)
 
 Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para evoluir de preview tecnica para release estavel.
-
-### Fase 0 - Gate para release estavel (critico)
-
-- [ ] Task: Rolling upgrade N -> N+1 sem perda de dados
-  Definicao de pronto:
-  - matrix de compatibilidade broker x cliente publicada
-  - runbook de upgrade e rollback validado em integracao
-  - teste automatizado de rolling upgrade no CI
-  Mitigacao atual: executar upgrade com janela de manutencao controlada.
-
-- [ ] Task: Suite de confiabilidade para producao (chaos + soak)
-  Definicao de pronto:
-  - suite de caos no pipeline com cenarios kill -9, rede parcial e disco lento
-  - soak test de 24h/72h sem perda de mensagem em filas/streams duraveis
-  - SLOs basicos publicados (disponibilidade, latencia p95/p99, durabilidade)
-  Mitigacao atual: rodar testes de integracao e validar manualmente cenarios de falha.
 
 ### Fase 1 - Escala e previsibilidade
 
