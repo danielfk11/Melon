@@ -143,6 +143,10 @@ if (!builder.Environment.IsEnvironment("Testing"))
     builder.Services.AddHostedService<MelonMQService>();
     builder.Services.AddHostedService<QueueGarbageCollector>();
     builder.Services.AddHostedService<ClusterMembershipService>();
+    if (melonConfig.Observability.LocalStack.Enabled)
+    {
+        builder.Services.AddHostedService<LocalObservabilityStackService>();
+    }
 }
 
 var app = builder.Build();

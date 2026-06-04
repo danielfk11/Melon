@@ -6,6 +6,34 @@ namespace MelonMQ.Tests.Unit.Core;
 public class ConfigurationSecurityTests
 {
     [Fact]
+    public void LocalObservabilityStack_ShouldDefaultOffInCode()
+    {
+        var config = new ObservabilityConfiguration();
+
+        config.LocalStack.Enabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateConfiguration_ShouldRejectLocalObservabilityStackInProduction()
+    {
+        var config = new MelonMQConfiguration
+        {
+            Observability = new ObservabilityConfiguration
+            {
+                LocalStack = new LocalObservabilityStackConfiguration
+                {
+                    Enabled = true
+                }
+            }
+        };
+
+        Action act = () => config.ValidateConfiguration(isProduction: true);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*must not auto-start*");
+    }
+
+    [Fact]
     public void ValidateConfiguration_ShouldRequireAuthInProduction()
     {
         var config = new MelonMQConfiguration

@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: MelonMQ
+    orgId: 1
+    folder: MelonMQ
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      path: ${MELONMQ_GRAFANA_DASHBOARDS_PATH}

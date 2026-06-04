@@ -652,18 +652,6 @@
                 <span class="metric-sub">Em processamento (não ack, sem grupos)</span>
             </div>
             <div class="metric-card">
-                <div class="icon pub">📤</div>
-                <span class="metric-label">Published</span>
-                <span class="metric-value">{{ metricCounter('messages.published.total') }}</span>
-                <span class="metric-sub">Contador acumulado</span>
-            </div>
-            <div class="metric-card">
-                <div class="icon con">📥</div>
-                <span class="metric-label">Consumed</span>
-                <span class="metric-value">{{ metricCounter('messages.consumed.total') }}</span>
-                <span class="metric-sub">Contador acumulado</span>
-            </div>
-            <div class="metric-card">
                 <div class="icon rate">⚡</div>
                 <span class="metric-label">Publish Rate</span>
                 <span class="metric-value">{{ formatRate(rates.publishedPerSec) }}</span>
@@ -686,18 +674,6 @@
                 <span class="metric-label">Durable Queues</span>
                 <span class="metric-value">{{ durableQueueCount }}</span>
                 <span class="metric-sub">Filas com persistência local</span>
-            </div>
-            <div class="metric-card">
-                <div class="icon rate">🧬</div>
-                <span class="metric-label">Exactly Once</span>
-                <span class="metric-value">{{ exactlyOnceQueueCount }}</span>
-                <span class="metric-sub">Filas com dedupe por messageId</span>
-            </div>
-            <div class="metric-card">
-                <div class="icon c">🛰</div>
-                <span class="metric-label">Cluster Nodes</span>
-                <span class="metric-value">{{ clusterStatus?.activeNodes ?? 1 }}</span>
-                <span class="metric-sub">Nós ativos / esperados: {{ clusterStatus ? (clusterStatus.activeNodes + '/' + clusterStatus.expectedNodes) : '1/1' }}</span>
             </div>
         </div>
 

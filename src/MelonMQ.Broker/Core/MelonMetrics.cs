@@ -56,13 +56,19 @@ public class MelonMetrics
     private readonly ConcurrentDictionary<string, (long Total, int Count)> _timings = new();
     private readonly ConcurrentDictionary<string, long> _streamGroupPartitionLag = new();
     private readonly ConcurrentDictionary<string, long> _streamPartitionLag = new();
+    private readonly QueueManager? _queueManager;
     private readonly ObservableGauge<long> _streamGroupPartitionLagGauge;
     private readonly ObservableGauge<long> _streamPartitionLagGauge;
+    private readonly ObservableGauge<long>? _queuePendingMessagesGauge;
+    private readonly ObservableGauge<long>? _queueInFlightMessagesGauge;
+    private readonly ObservableGauge<long>? _queuesTotalGauge;
     
     public static MelonMetrics Instance { get; } = new();
 
-    public MelonMetrics()
+    public MelonMetrics(QueueManager? queueManager = null)
     {
+        _queueManager = queueManager;
+
         _streamGroupPartitionLagGauge = Meter.CreateObservableGauge<long>(
             "melonmq_stream_group_partition_lag",
             ObserveStreamGroupPartitionLag,
@@ -74,6 +80,27 @@ public class MelonMetrics
             ObserveStreamPartitionLag,
             unit: "messages",
             description: "Current max lag by stream queue partition across groups.");
+
+        if (_queueManager != null)
+        {
+            _queuePendingMessagesGauge = Meter.CreateObservableGauge<long>(
+                "melonmq_queue_pending_messages",
+                ObserveQueuePendingMessages,
+                unit: "messages",
+                description: "Current pending messages by queue.");
+
+            _queueInFlightMessagesGauge = Meter.CreateObservableGauge<long>(
+                "melonmq_queue_inflight_messages",
+                ObserveQueueInFlightMessages,
+                unit: "messages",
+                description: "Current in-flight messages by queue.");
+
+            _queuesTotalGauge = Meter.CreateObservableGauge<long>(
+                "melonmq_queues_total",
+                ObserveQueuesTotal,
+                unit: "queues",
+                description: "Current number of classic queues.");
+        }
     }
 
     public void IncrementCounter(string name, long value = 1)
@@ -292,6 +319,47 @@ public class MelonMetrics
                     { "partition", partition }
                 });
         }
+    }
+
+    private IEnumerable<Measurement<long>> ObserveQueuePendingMessages()
+    {
+        if (_queueManager == null)
+            yield break;
+
+        foreach (var queue in _queueManager.GetAllQueues())
+        {
+            yield return new Measurement<long>(
+                queue.PendingCount,
+                CreateQueueTagList(queue));
+        }
+    }
+
+    private IEnumerable<Measurement<long>> ObserveQueueInFlightMessages()
+    {
+        if (_queueManager == null)
+            yield break;
+
+        foreach (var queue in _queueManager.GetAllQueues())
+        {
+            yield return new Measurement<long>(
+                queue.InFlightCount,
+                CreateQueueTagList(queue));
+        }
+    }
+
+    private Measurement<long> ObserveQueuesTotal()
+    {
+        return new Measurement<long>(_queueManager?.QueueCount ?? 0);
+    }
+
+    private static TagList CreateQueueTagList(MessageQueue queue)
+    {
+        return new TagList
+        {
+            { "queue", queue.Name },
+            { "durable", queue.IsDurable.ToString().ToLowerInvariant() },
+            { "exactly_once", queue.IsExactlyOnce.ToString().ToLowerInvariant() }
+        };
     }
 }
 

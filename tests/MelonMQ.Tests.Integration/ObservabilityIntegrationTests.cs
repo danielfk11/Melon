@@ -50,6 +50,47 @@ public class ObservabilityIntegrationTests
     }
 
     [Fact]
+    public async Task MetricsEndpoint_ShouldExposeQueueBacklogGauges()
+    {
+        await using var factory = CreateFactory(enableOtlp: false, otlpEndpoint: null);
+        using var client = factory.CreateClient();
+
+        var queueName = $"backlog-{Guid.NewGuid():N}";
+        var declareResponse = await client.PostAsJsonAsync("/queues/declare", new
+        {
+            name = queueName,
+            durable = true,
+            exactlyOnce = true
+        });
+
+        declareResponse.EnsureSuccessStatusCode();
+
+        for (var i = 0; i < 2; i++)
+        {
+            var publishResponse = await client.PostAsJsonAsync($"/queues/{queueName}/publish", new
+            {
+                message = $"hello-backlog-{i}",
+                persistent = true
+            });
+
+            publishResponse.EnsureSuccessStatusCode();
+        }
+
+        var metricsText = await PollMetricsUntilAsync(
+            client,
+            payload => payload.Contains("melonmq_queue_pending_messages", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(8));
+
+        metricsText.Should().Contain("melonmq_queue_pending_messages");
+        metricsText.Should().Contain("melonmq_queue_inflight_messages");
+        metricsText.Should().Contain("melonmq_queues_total");
+        metricsText.Should().Contain($"queue=\"{queueName}\"");
+        metricsText.Should().Contain("durable=\"true\"");
+        metricsText.Should().Contain("exactly_once=\"true\"");
+        metricsText.Should().Contain(" 2");
+    }
+
+    [Fact]
     public async Task OtlpExporter_ShouldSendMetricsAndTraces_ToCollector()
     {
         await using var collector = await TestOtlpCollector.StartAsync();
@@ -99,6 +140,17 @@ public class ObservabilityIntegrationTests
 
     private static async Task<string> PollMetricsAsync(HttpClient client, TimeSpan timeout)
     {
+        return await PollMetricsUntilAsync(
+            client,
+            payload => payload.Contains("melonmq_messages_published_total", StringComparison.Ordinal),
+            timeout);
+    }
+
+    private static async Task<string> PollMetricsUntilAsync(
+        HttpClient client,
+        Func<string, bool> isReady,
+        TimeSpan timeout)
+    {
         var started = DateTime.UtcNow;
         while (DateTime.UtcNow - started < timeout)
         {
@@ -106,7 +158,7 @@ public class ObservabilityIntegrationTests
             if (response.StatusCode == HttpStatusCode.OK)
             {
                 var payload = await response.Content.ReadAsStringAsync();
-                if (payload.Contains("melonmq_messages_published_total", StringComparison.Ordinal))
+                if (isReady(payload))
                 {
                     return payload;
                 }

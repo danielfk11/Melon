@@ -30,6 +30,7 @@ public class ObservabilityConfiguration
     public string ServiceVersion { get; set; } = RuntimeVersionResolver.GetCurrentVersion();
     public PrometheusConfiguration Prometheus { get; set; } = new();
     public OtlpConfiguration Otlp { get; set; } = new();
+    public LocalObservabilityStackConfiguration LocalStack { get; set; } = new();
 }
 
 public static class RuntimeVersionResolver
@@ -72,6 +73,16 @@ public class OtlpConfiguration
     public bool EnableTraces { get; set; } = true;
     public int MetricsExportIntervalMs { get; set; } = 5000;
     public int TimeoutMs { get; set; } = 10000;
+}
+
+public class LocalObservabilityStackConfiguration
+{
+    public bool Enabled { get; set; } = false;
+    public string StartScriptPath { get; set; } = "scripts/observability-start.sh";
+    public string PrometheusListenAddress { get; set; } = "127.0.0.1:9091";
+    public string GrafanaAddress { get; set; } = "127.0.0.1";
+    public int GrafanaPort { get; set; } = 3000;
+    public bool FailBrokerOnStartError { get; set; } = false;
 }
 
 public class ClusterConfiguration
@@ -250,6 +261,13 @@ public static class ConfigurationExtensions
 
         if (isProduction)
         {
+            if (config.Observability.LocalStack.Enabled)
+            {
+                throw new InvalidOperationException(
+                    "Production/Staging must not auto-start the local observability stack. " +
+                    "Set MelonMQ:Observability:LocalStack:Enabled=false.");
+            }
+
             if (!config.Security.RequireAuth)
             {
                 throw new InvalidOperationException("Production requires MelonMQ:Security:RequireAuth=true.");
@@ -340,6 +358,23 @@ public static class ConfigurationExtensions
                 throw new ArgumentOutOfRangeException(
                     nameof(config.Observability.Otlp.TimeoutMs),
                     "OTLP exporter timeout must be at least 1000ms.");
+            }
+        }
+
+        if (config.Observability.LocalStack.Enabled)
+        {
+            if (string.IsNullOrWhiteSpace(config.Observability.LocalStack.StartScriptPath))
+            {
+                throw new InvalidOperationException(
+                    "MelonMQ:Observability:LocalStack:StartScriptPath cannot be empty when LocalStack is enabled.");
+            }
+
+            if (config.Observability.LocalStack.GrafanaPort < 1 ||
+                config.Observability.LocalStack.GrafanaPort > 65535)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(config.Observability.LocalStack.GrafanaPort),
+                    "Grafana port must be between 1 and 65535.");
             }
         }
 

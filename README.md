@@ -111,6 +111,14 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
         "EnableTraces": true,
         "MetricsExportIntervalMs": 5000,
         "TimeoutMs": 10000
+      },
+      "LocalStack": {
+        "Enabled": false,
+        "StartScriptPath": "scripts/observability-start.sh",
+        "PrometheusListenAddress": "127.0.0.1:9091",
+        "GrafanaAddress": "127.0.0.1",
+        "GrafanaPort": 3000,
+        "FailBrokerOnStartError": false
       }
     },
     "Cluster": {
@@ -199,6 +207,12 @@ pbkdf2-sha256$iterations$saltBase64$hashBase64
 | Otlp.EnableTraces | true | Exporta traces OTLP |
 | Otlp.MetricsExportIntervalMs | 5000 | Intervalo de exportacao de metricas |
 | Otlp.TimeoutMs | 10000 | Timeout de exportacao OTLP |
+| LocalStack.Enabled | false | Auto-inicia Prometheus/Grafana locais junto com o broker em Development |
+| LocalStack.StartScriptPath | scripts/observability-start.sh | Script usado para iniciar a stack local |
+| LocalStack.PrometheusListenAddress | 127.0.0.1:9091 | Bind do Prometheus local |
+| LocalStack.GrafanaAddress | 127.0.0.1 | Bind do Grafana local |
+| LocalStack.GrafanaPort | 3000 | Porta HTTP do Grafana local |
+| LocalStack.FailBrokerOnStartError | false | Se true, falha o broker quando a stack local nao iniciar |
 
 #### MelonMQ:Cluster
 
@@ -300,6 +314,75 @@ Endpoints internos de cluster (uso no-a-no):
 Observacao:
 
 - As rotas `POST /cluster/replicate/exchange/declare`, `POST /cluster/replicate/exchange/bind` e `POST /cluster/replicate/exchange/unbind` sao usadas para sincronizar a topologia de exchanges/bindings entre nos no modelo atual de cluster.
+
+## Grafana e Prometheus sem Docker
+
+MelonMQ ja expoe metricas Prometheus em `/metrics`. O repositorio inclui uma stack local sem Docker para visualizar esses dados no Grafana:
+
+- `observability/prometheus/prometheus.yml`
+- `observability/grafana/provisioning/datasources/prometheus.yml`
+- `observability/grafana/provisioning/dashboards/dashboards.yml`
+- `observability/grafana/dashboards/melonmq-overview.json`
+- `scripts/observability-start.sh`
+- `scripts/observability-check.sh`
+
+Instale Prometheus e Grafana na maquina.
+
+macOS com Homebrew:
+
+```bash
+brew install prometheus grafana
+```
+
+Linux:
+
+```bash
+# Use o gerenciador da sua distro ou os binarios oficiais de Prometheus/Grafana.
+prometheus --version
+grafana-server -v || grafana --version
+```
+
+Suba o broker. Em `Development`, `MelonMQ:Observability:LocalStack:Enabled=true` em `appsettings.Development.json`, entao o broker tenta iniciar Prometheus e Grafana automaticamente:
+
+```bash
+dotnet run --project src/MelonMQ.Broker
+```
+
+Se quiser iniciar a stack manualmente, ou se desabilitar `LocalStack.Enabled`, use:
+
+```bash
+scripts/observability-start.sh
+```
+
+URLs padrao:
+
+- Broker metrics: http://localhost:9090/metrics
+- Prometheus: http://127.0.0.1:9091
+- Grafana: http://127.0.0.1:3000
+- Login Grafana local: `admin` / `admin`
+
+Valide a stack:
+
+```bash
+scripts/observability-check.sh
+```
+
+Se Prometheus ou Grafana nao estiverem instalados, o broker continua subindo e registra aviso no log. Para exigir falha do broker quando a observabilidade local nao iniciar, configure `MelonMQ:Observability:LocalStack:FailBrokerOnStartError=true`.
+
+O dashboard provisionado chama-se `MelonMQ Overview` e mostra:
+
+- taxa de mensagens publicadas e consumidas;
+- taxa por fila;
+- mensagens pendentes e in-flight por fila;
+- latencia de operacoes;
+- tamanho dos payloads;
+- conexoes abertas/fechadas;
+- erros por operacao;
+- lag de streams;
+- replicacao de cluster;
+- taxa HTTP dos endpoints do broker.
+
+Se o broker nao estiver em `localhost:9090`, ajuste `observability/prometheus/prometheus.yml` ou aponte `MELONMQ_PROMETHEUS_CONFIG` para outro arquivo antes de rodar `scripts/observability-start.sh`.
 
 ### Payloads HTTP exatos
 
@@ -782,8 +865,8 @@ Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para ev
   Definicao de pronto:
   - chart/manifests de referencia com probes, recursos e persistencia
   - guias de deploy HA com 3 nos
-  - dashboards e alertas padrao para Prometheus/Grafana
-  Mitigacao atual: deploy manual com configuracao custom por ambiente.
+  - alertas padrao para Prometheus/Grafana
+  Mitigacao atual: dashboards locais estao versionados em `observability/`; deploy segue manual com configuracao custom por ambiente.
 
 ## Licenca
 
