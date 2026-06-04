@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 - 2026-06-04
+
+- Stack local de observabilidade sem Docker com Prometheus e Grafana.
+- Dashboard Grafana provisionado para throughput, backlog, in-flight, latencia e erros.
+- Metricas Prometheus de backlog por fila (`melonmq_queue_pending_messages`, `melonmq_queue_inflight_messages`, `melonmq_queues_total`).
+- Auto-start opcional da stack local em ambiente Development.
+
 ## 1.1.0 - 2026-05-24
 
 - Streams particionados com `partitionCount` e publish por `partitionKey`/`partition`.

@@ -96,7 +96,7 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
     },
     "Observability": {
       "ServiceName": "MelonMQ.Broker",
-      "ServiceVersion": "1.1.0",
+      "ServiceVersion": "1.2.0",
       "Prometheus": {
         "Enabled": true,
         "EndpointPath": "/metrics",
@@ -195,7 +195,7 @@ pbkdf2-sha256$iterations$saltBase64$hashBase64
 | Chave | Default | O que faz |
 |---|---:|---|
 | ServiceName | MelonMQ.Broker | Nome do recurso OTEL |
-| ServiceVersion | 1.1.0 | Versao do recurso OTEL |
+| ServiceVersion | 1.2.0 | Versao do recurso OTEL |
 | Prometheus.Enabled | true | Exponibiliza endpoint de metricas |
 | Prometheus.EndpointPath | /metrics | Rota Prometheus |
 | Prometheus.RequireAdminApiKey | false | Exige X-Api-Key no endpoint de metricas |
@@ -488,7 +488,7 @@ dotnet add package MelonMQ.Broker --prerelease
 Se quiser travar em uma versao especifica:
 
 ```bash
-dotnet add package MelonMQ.Client --version 1.1.0
+dotnet add package MelonMQ.Client --version 1.2.0
 ```
 
 Para conferir os pacotes instalados no projeto atual:
@@ -501,16 +501,16 @@ Opcional (edicao manual do .csproj):
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="MelonMQ.Client" Version="1.1.0" />
-  <PackageReference Include="MelonMQ.Protocol" Version="1.1.0" />
+  <PackageReference Include="MelonMQ.Client" Version="1.2.0" />
+  <PackageReference Include="MelonMQ.Protocol" Version="1.2.0" />
 </ItemGroup>
 ```
 
 ### Versao sem confusao (guia rapido)
 
-- **Mudar versao do pacote:** `./scripts/set-version.sh 1.1.0` (sem `v`)
-- **Version no arquivo:** `Directory.Build.props` em `<Version>1.1.0</Version>`
-- **Tag git da release:** `v1.1.0` (com `v`)
+- **Mudar versao do pacote:** `./scripts/set-version.sh 1.2.0` (sem `v`)
+- **Version no arquivo:** `Directory.Build.props` em `<Version>1.2.0</Version>`
+- **Tag git da release:** `v1.2.0` (com `v`)
 
 API publica atual:
 
