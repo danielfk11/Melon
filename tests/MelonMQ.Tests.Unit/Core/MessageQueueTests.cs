@@ -67,6 +67,38 @@ public class MessageQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task EnqueueDetailedAsync_ShouldReturnBackpressured_WhenQueueIsFull()
+    {
+        var config = new QueueConfiguration { Name = "small-queue" };
+        using var queue = new MessageQueue(
+            config,
+            dataDirectory: null,
+            logger: new NullLogger<MessageQueue>(),
+            channelCapacity: 1,
+            maxEnqueueWaitMs: 1);
+
+        var first = new QueueMessage
+        {
+            MessageId = Guid.NewGuid(),
+            Body = Encoding.UTF8.GetBytes("first"),
+            EnqueuedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+        var second = new QueueMessage
+        {
+            MessageId = Guid.NewGuid(),
+            Body = Encoding.UTF8.GetBytes("second"),
+            EnqueuedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        var firstResult = await queue.EnqueueDetailedAsync(first);
+        var secondResult = await queue.EnqueueDetailedAsync(second);
+
+        firstResult.Should().Be(QueueEnqueueResult.Enqueued);
+        secondResult.Should().Be(QueueEnqueueResult.Backpressured);
+        queue.PendingCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task DequeueAsync_ShouldReturnMessage_WhenMessageExists()
     {
         // Arrange

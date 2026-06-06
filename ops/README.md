@@ -38,6 +38,12 @@ sudo cp ops/melonmq.env.example /etc/melonmq/melonmq.env
 
 Edite `/etc/melonmq/melonmq.env` com portas, caminhos, API keys, usuarios, certificado TLS e chave de cluster.
 
+Gere hashes PBKDF2 para `MelonMQ__Security__Users__*`:
+
+```bash
+scripts/hash-password.sh "senha-forte"
+```
+
 ## Linux systemd
 
 ```bash
@@ -105,6 +111,14 @@ sudo rsync -a --delete /tmp/melonmq-new/ /opt/melonmq/
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.melonmq.broker.plist
 ```
 
+## Pacote de release sem Docker
+
+```bash
+scripts/release-package.sh
+```
+
+O pacote inclui binarios publicados, templates `ops/`, configuracao de observabilidade e checksum SHA-256 em `artifacts/release/`.
+
 ## Restore
 
 Pare o servico antes de restaurar.
@@ -119,6 +133,20 @@ Depois suba o servico e valide:
 curl http://127.0.0.1:9090/health
 curl http://127.0.0.1:9090/stats
 ```
+
+Valide o fluxo backup/restore em ambiente temporario:
+
+```bash
+scripts/dr-validate.sh
+```
+
+## Validacao operacional
+
+```bash
+scripts/ops-validate.sh
+```
+
+Esse comando valida scripts, plist launchd, unit systemd quando `systemd-analyze` existir e executa uma restauracao DR temporaria.
 
 ## Observabilidade
 

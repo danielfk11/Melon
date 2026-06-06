@@ -8,6 +8,19 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
+if (args.Length > 0 && string.Equals(args[0], "hash-password", StringComparison.OrdinalIgnoreCase))
+{
+    if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
+    {
+        Console.Error.WriteLine("Usage: dotnet run --project src/MelonMQ.Broker -- hash-password <password>");
+        Environment.ExitCode = 2;
+        return;
+    }
+
+    Console.WriteLine(PasswordHasher.HashPassword(args[1]));
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Bind and validate configuration
@@ -46,7 +59,15 @@ builder.Services.AddSingleton<QueueManager>(provider =>
 {
     var config = provider.GetRequiredService<MelonMQConfiguration>();
     var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
-    return new QueueManager(config.DataDirectory, loggerFactory, config.MaxConnections, config.ChannelCapacity, config.CompactionThresholdMB, config.BatchFlushMs, config.QueueGC.MaxQueues);
+    return new QueueManager(
+        config.DataDirectory,
+        loggerFactory,
+        config.MaxConnections,
+        config.ChannelCapacity,
+        config.CompactionThresholdMB,
+        config.BatchFlushMs,
+        config.QueueGC.MaxQueues,
+        config.Backpressure.MaxEnqueueWaitMs);
 });
 
 builder.Services.AddHttpClient("cluster", client =>
@@ -272,7 +293,7 @@ app.MapPost("/cluster/replicate/exchange/unbind", (ClusterUnbindQueueReplication
     return Results.Ok(new { success = true });
 });
 
-app.MapPost("/cluster/replicate/publish", async (ClusterPublishReplicationRequest request, QueueManager queueManager, ClusterCoordinator clusterCoordinator, HttpContext context) =>
+app.MapPost("/cluster/replicate/publish", async (ClusterPublishReplicationRequest request, QueueManager queueManager, ClusterCoordinator clusterCoordinator, MelonMetrics metrics, HttpContext context) =>
 {
     if (!clusterCoordinator.ValidateClusterRequest(context))
         return Results.Unauthorized();
@@ -290,7 +311,13 @@ app.MapPost("/cluster/replicate/publish", async (ClusterPublishReplicationReques
         DeliveryCount = request.DeliveryCount
     };
 
-    await queue.EnqueueAsync(message, waitForPersistenceFlush: queue.IsDurable);
+    var enqueueResult = await queue.EnqueueDetailedAsync(message, waitForPersistenceFlush: queue.IsDurable);
+    if (enqueueResult == QueueEnqueueResult.Backpressured)
+    {
+        metrics.RecordMessageRejected(request.Queue, "backpressure", source: "cluster");
+        return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+    }
+
     return Results.Ok(new { success = true });
 });
 
@@ -417,7 +444,11 @@ app.MapGet("/stats", (HttpContext context, QueueManager queueManager, Connection
                 heartbeatIntervalMs = melonConfig.HeartbeatInterval,
                 maxConnections = melonConfig.MaxConnections,
                 maxMessageSizeBytes = melonConfig.MaxMessageSize,
-                channelCapacity = melonConfig.ChannelCapacity
+                channelCapacity = melonConfig.ChannelCapacity,
+                backpressure = new
+                {
+                    maxEnqueueWaitMs = melonConfig.Backpressure.MaxEnqueueWaitMs
+                }
             },
             durability = new
             {
@@ -614,13 +645,22 @@ app.MapPost("/queues/{queueName}/publish", async (string queueName, PublishReque
                 : null
         };
 
-        var enqueued = await queue.EnqueueAsync(message, waitForPersistenceFlush: queue.IsDurable);
-        if (!enqueued)
+        var enqueueResult = await queue.EnqueueDetailedAsync(message, waitForPersistenceFlush: queue.IsDurable);
+        if (enqueueResult != QueueEnqueueResult.Enqueued)
         {
-            if (queue.IsExactlyOnce && queue.HasSeenMessageId(message.MessageId))
+            if (enqueueResult == QueueEnqueueResult.Duplicate)
             {
                 AuditAdministrativeAction(context, "queue.publish", queueName, success: true, "duplicate suppressed");
                 return Results.Ok(new { success = true, duplicate = true, messageId = message.MessageId });
+            }
+
+            if (enqueueResult == QueueEnqueueResult.Backpressured)
+            {
+                metrics.RecordMessageRejected(queueName, "backpressure", source: "http");
+                AuditAdministrativeAction(context, "queue.publish", queueName, success: false, "backpressure");
+                return Results.Json(
+                    new { error = "Queue is under backpressure; retry later.", messageId = message.MessageId },
+                    statusCode: StatusCodes.Status429TooManyRequests);
             }
 
             AuditAdministrativeAction(context, "queue.publish", queueName, success: false, "enqueue rejected");

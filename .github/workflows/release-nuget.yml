@@ -22,7 +22,7 @@ jobs:
       - name: Validate tag matches Directory.Build.props version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PROP_VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props || true)"
+          PROP_VERSION="$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' Directory.Build.props | head -n 1)"
 
           if [ -z "${PROP_VERSION}" ]; then
             echo "Could not read <Version> from Directory.Build.props"
@@ -58,6 +58,17 @@ jobs:
           dotnet pack src/MelonMQ.Protocol/MelonMQ.Protocol.csproj --configuration Release --no-build --nologo -o artifacts/nuget
           dotnet pack src/MelonMQ.Client/MelonMQ.Client.csproj --configuration Release --no-build --nologo -o artifacts/nuget
           dotnet pack src/MelonMQ.Broker/MelonMQ.Broker.csproj --configuration Release --no-build --nologo -o artifacts/nuget
+
+      - name: Build no-Docker operational package
+        run: scripts/release-package.sh
+
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: melonmq-release-package
+          path: |
+            artifacts/release/*.tar.gz
+            artifacts/release/*.sha256
 
       - name: Push to NuGet
         env:

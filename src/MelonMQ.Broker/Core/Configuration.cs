@@ -17,6 +17,7 @@ public class MelonMQConfiguration
     public int HeartbeatInterval { get; set; } = 10000;
     public int MaxConnections { get; set; } = 1000;
     public int MaxMessageSize { get; set; } = 1048576; // 1MB
+    public BackpressureConfiguration Backpressure { get; set; } = new();
     public TcpTlsConfiguration TcpTls { get; set; } = new();
     public SecurityConfiguration Security { get; set; } = new();
     public ObservabilityConfiguration Observability { get; set; } = new();
@@ -31,6 +32,11 @@ public class ObservabilityConfiguration
     public PrometheusConfiguration Prometheus { get; set; } = new();
     public OtlpConfiguration Otlp { get; set; } = new();
     public LocalObservabilityStackConfiguration LocalStack { get; set; } = new();
+}
+
+public class BackpressureConfiguration
+{
+    public int MaxEnqueueWaitMs { get; set; } = 1000;
 }
 
 public static class RuntimeVersionResolver
@@ -468,6 +474,13 @@ public static class ConfigurationExtensions
         }
 
         _ = MelonMQ.Protocol.MessageSizePolicy.ComputeMaxFrameSizeBytes(config.MaxMessageSize);
+
+        if (config.Backpressure.MaxEnqueueWaitMs < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(config.Backpressure.MaxEnqueueWaitMs),
+                "Backpressure MaxEnqueueWaitMs cannot be negative.");
+        }
         
         if (config.MaxConnections < 1)
         {

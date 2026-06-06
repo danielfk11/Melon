@@ -631,9 +631,23 @@ public class TcpServer
                 return;
             }
 
+            var backpressuredTarget = targetQueueNames
+                .Select(_queueManager.GetQueue)
+                .FirstOrDefault(q => q?.IsBackpressured == true);
+            if (backpressuredTarget != null)
+            {
+                _metrics.RecordMessageRejected(backpressuredTarget.Name, "backpressure", source: "tcp");
+                await SendError(
+                    connection,
+                    frame.CorrelationId,
+                    $"Queue '{backpressuredTarget.Name}' is under backpressure; retry later.",
+                    "backpressure");
+                return;
+            }
+
             foreach (var queueName in targetQueueNames)
             {
-                await PublishToQueueByName(
+                var result = await PublishToQueueByName(
                     queueName,
                     bodyBytes,
                     messageId,
@@ -643,6 +657,16 @@ public class TcpServer
                     payload.PartitionKey ?? payload.RoutingKey,
                     payload.Partition,
                     cancellationToken);
+                if (result == QueueEnqueueResult.Backpressured)
+                {
+                    _metrics.RecordMessageRejected(queueName, "backpressure", source: "tcp");
+                    await SendError(
+                        connection,
+                        frame.CorrelationId,
+                        $"Queue '{queueName}' is under backpressure; retry later.",
+                        "backpressure");
+                    return;
+                }
             }
 
             sw.Stop();
@@ -684,6 +708,19 @@ public class TcpServer
         }
 
         var effectiveTtlMs = payload.TtlMs ?? queue.DefaultTtlMs;
+        var groupQueues = _queueManager.GetGroupQueues(payload.Queue).ToList();
+        var backpressuredGroupQueue = groupQueues.FirstOrDefault(q => q.IsBackpressured);
+        if (backpressuredGroupQueue != null)
+        {
+            _metrics.RecordMessageRejected(backpressuredGroupQueue.Name, "backpressure", source: "tcp");
+            await SendError(
+                connection,
+                frame.CorrelationId,
+                $"Group queue '{backpressuredGroupQueue.Name}' is under backpressure; retry later.",
+                "backpressure");
+            return;
+        }
+
         var message = new QueueMessage
         {
             MessageId = messageId,
@@ -695,19 +732,41 @@ public class TcpServer
             DeliveryCount = 0
         };
 
-        var enqueued = await queue.EnqueueAsync(
+        if (queue.IsBackpressured)
+        {
+            _metrics.RecordMessageRejected(payload.Queue, "backpressure", source: "tcp");
+            await SendError(
+                connection,
+                frame.CorrelationId,
+                $"Queue '{payload.Queue}' is under backpressure; retry later.",
+                "backpressure");
+            return;
+        }
+
+        var enqueueResult = await queue.EnqueueDetailedAsync(
             message,
             cancellationToken,
             waitForPersistenceFlush: queue.IsDurable);
 
-        if (!enqueued && queue.IsExactlyOnce && queue.HasSeenMessageId(message.MessageId))
+        if (enqueueResult == QueueEnqueueResult.Duplicate)
         {
             await SendPublishSuccess(connection, frame.CorrelationId, messageId, duplicate: true);
             return;
         }
 
+        if (enqueueResult == QueueEnqueueResult.Backpressured)
+        {
+            _metrics.RecordMessageRejected(payload.Queue, "backpressure", source: "tcp");
+            await SendError(
+                connection,
+                frame.CorrelationId,
+                $"Queue '{payload.Queue}' is under backpressure; retry later.",
+                "backpressure");
+            return;
+        }
+
         // Fan-out to consumer group queues
-        foreach (var groupQueue in _queueManager.GetGroupQueues(payload.Queue))
+        foreach (var groupQueue in groupQueues)
         {
             var groupMessage = new QueueMessage
             {
@@ -719,10 +778,21 @@ public class TcpServer
                 Redelivered = false,
                 DeliveryCount = 0
             };
-            await groupQueue.EnqueueAsync(
+            var groupResult = await groupQueue.EnqueueDetailedAsync(
                 groupMessage,
                 cancellationToken,
                 waitForPersistenceFlush: groupQueue.IsDurable);
+
+            if (groupResult == QueueEnqueueResult.Backpressured)
+            {
+                _metrics.RecordMessageRejected(groupQueue.Name, "backpressure", source: "tcp");
+                await SendError(
+                    connection,
+                    frame.CorrelationId,
+                    $"Group queue '{groupQueue.Name}' is under backpressure; retry later.",
+                    "backpressure");
+                return;
+            }
         }
 
         if (_clusterCoordinator?.Enabled == true)
@@ -745,7 +815,7 @@ public class TcpServer
         await SendPublishSuccess(connection, frame.CorrelationId, messageId);
     }
 
-    private async Task PublishToQueueByName(
+    private async Task<QueueEnqueueResult> PublishToQueueByName(
         string queueName,
         byte[] bodyBytes,
         Guid messageId,
@@ -767,7 +837,7 @@ public class TcpServer
                 partitionKey: partitionKey,
                 partition: partition);
             RefreshStreamLagMetrics(queueName, streamQueue);
-            return;
+            return QueueEnqueueResult.Enqueued;
         }
 
         var queue = _queueManager.GetQueue(queueName);
@@ -778,6 +848,12 @@ public class TcpServer
         }
 
         var effectiveTtlMs = ttlMs ?? queue.DefaultTtlMs;
+        var groupQueues = _queueManager.GetGroupQueues(queueName).ToList();
+        if (groupQueues.Any(q => q.IsBackpressured))
+        {
+            return QueueEnqueueResult.Backpressured;
+        }
+
         var message = new QueueMessage
         {
             MessageId = messageId,
@@ -789,14 +865,18 @@ public class TcpServer
             DeliveryCount = 0
         };
 
-        await queue.EnqueueAsync(
+        var enqueueResult = await queue.EnqueueDetailedAsync(
             message,
             cancellationToken,
             waitForPersistenceFlush: queue.IsDurable);
-
-        foreach (var groupQueue in _queueManager.GetGroupQueues(queueName))
+        if (enqueueResult != QueueEnqueueResult.Enqueued)
         {
-            await groupQueue.EnqueueAsync(new QueueMessage
+            return enqueueResult;
+        }
+
+        foreach (var groupQueue in groupQueues)
+        {
+            var groupResult = await groupQueue.EnqueueDetailedAsync(new QueueMessage
             {
                 MessageId = message.MessageId,
                 Body = message.Body,
@@ -804,7 +884,14 @@ public class TcpServer
                 ExpiresAt = message.ExpiresAt,
                 Persistent = message.Persistent
             }, cancellationToken, waitForPersistenceFlush: groupQueue.IsDurable);
+
+            if (groupResult == QueueEnqueueResult.Backpressured)
+            {
+                return groupResult;
+            }
         }
+
+        return QueueEnqueueResult.Enqueued;
     }
 
     private async Task SendPublishSuccess(ClientConnection connection, ulong correlationId, Guid messageId, bool duplicate = false)
@@ -1479,7 +1566,7 @@ public class TcpServer
         await WriteFrameAsync(connection, response);
     }
 
-    private async Task SendError(ClientConnection connection, ulong correlationId, string message)
+    private async Task SendError(ClientConnection connection, ulong correlationId, string message, string? code = null)
     {
         try
         {
@@ -1487,7 +1574,7 @@ public class TcpServer
             {
                 Type = MessageType.Error,
                 CorrelationId = correlationId,
-                Payload = new ErrorPayload { Message = message }
+                Payload = new ErrorPayload { Message = message, Code = code }
             };
             
             await WriteFrameAsync(connection, errorFrame);

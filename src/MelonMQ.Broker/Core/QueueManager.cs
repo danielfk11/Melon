@@ -17,8 +17,9 @@ public class QueueManager : IQueueManager, IDisposable
     private readonly long _compactionThresholdMB;
     private readonly int _batchFlushMs;
     private readonly int _maxQueues;
+    private readonly int _maxEnqueueWaitMs;
 
-    public QueueManager(string? dataDirectory, ILoggerFactory loggerFactory, int maxConnections = 1000, int channelCapacity = 10000, long compactionThresholdMB = 100, int batchFlushMs = 10, int maxQueues = 0)
+    public QueueManager(string? dataDirectory, ILoggerFactory loggerFactory, int maxConnections = 1000, int channelCapacity = 10000, long compactionThresholdMB = 100, int batchFlushMs = 10, int maxQueues = 0, int maxEnqueueWaitMs = 1000)
     {
         _dataDirectory = dataDirectory;
         _loggerFactory = loggerFactory;
@@ -27,6 +28,7 @@ public class QueueManager : IQueueManager, IDisposable
         _compactionThresholdMB = compactionThresholdMB;
         _batchFlushMs = batchFlushMs;
         _maxQueues = maxQueues;
+        _maxEnqueueWaitMs = maxEnqueueWaitMs;
         _logger = loggerFactory.CreateLogger<QueueManager>();
 
         if (!string.IsNullOrEmpty(_dataDirectory))
@@ -84,7 +86,8 @@ public class QueueManager : IQueueManager, IDisposable
                 queueResolver: GetQueue,
                 channelCapacity: _channelCapacity,
                 compactionThresholdMB: _compactionThresholdMB,
-                batchFlushMs: _batchFlushMs);
+                batchFlushMs: _batchFlushMs,
+                maxEnqueueWaitMs: _maxEnqueueWaitMs);
             _logger.LogInformation("Declared queue {QueueName} (durable: {Durable})", name, durable);
             return queue;
         });
@@ -249,7 +252,8 @@ public class QueueManager : IQueueManager, IDisposable
                 queueResolver: GetQueue,
                 channelCapacity: _channelCapacity,
                 compactionThresholdMB: _compactionThresholdMB,
-                batchFlushMs: _batchFlushMs);
+                batchFlushMs: _batchFlushMs,
+                maxEnqueueWaitMs: _maxEnqueueWaitMs);
         });
 
         _groupQueuesBySource.AddOrUpdate(

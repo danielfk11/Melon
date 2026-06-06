@@ -22,7 +22,7 @@ if [[ -z "${RELEASE_TAG}" ]]; then
   exit 1
 fi
 
-PROP_VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' "${ROOT_DIR}/Directory.Build.props" || true)"
+PROP_VERSION="$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' "${ROOT_DIR}/Directory.Build.props" | head -n 1)"
 if [[ -z "${PROP_VERSION}" ]]; then
   echo "Could not read <Version> from Directory.Build.props"
   exit 1

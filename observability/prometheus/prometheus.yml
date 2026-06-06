@@ -2,6 +2,9 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+rule_files:
+  - melonmq-rules.yml
+
 scrape_configs:
   - job_name: melonmq-broker
     metrics_path: /metrics

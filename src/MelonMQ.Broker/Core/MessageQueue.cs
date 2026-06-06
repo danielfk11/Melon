@@ -24,8 +24,11 @@ public class MessageQueue : IDisposable
     private readonly ILogger<MessageQueue> _logger;
     private readonly Func<string, MessageQueue?>? _queueResolver;
     private readonly SemaphoreSlim _persistenceLock = new(1, 1);
+    private readonly SemaphoreSlim _enqueueLock = new(1, 1);
     private long _persistenceFileSize;
     private readonly long _compactionThresholdBytes;
+    private readonly int _channelCapacity;
+    private readonly int _maxEnqueueWaitMs;
     private ulong _nextDeliveryTag;
     private int _pendingCount;
     private long _lastActivityAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -45,15 +48,18 @@ public class MessageQueue : IDisposable
         Func<string, MessageQueue?>? queueResolver = null,
         int channelCapacity = 10000,
         long compactionThresholdMB = 100,
-        int batchFlushMs = 10)
+        int batchFlushMs = 10,
+        int maxEnqueueWaitMs = 1000)
     {
         _config = config;
         _logger = logger;
         _queueResolver = queueResolver;
+        _channelCapacity = Math.Max(1, channelCapacity);
+        _maxEnqueueWaitMs = Math.Max(0, maxEnqueueWaitMs);
         _compactionThresholdBytes = compactionThresholdMB * 1024 * 1024;
         _batchFlushMs = batchFlushMs;
 
-        var options = new BoundedChannelOptions(channelCapacity)
+        var options = new BoundedChannelOptions(_channelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = false,
@@ -72,7 +78,7 @@ public class MessageQueue : IDisposable
                 _persistenceFileSize = new FileInfo(_persistenceFilePath).Length;
             }
 
-            var persistenceCapacity = Math.Max(256, channelCapacity);
+            var persistenceCapacity = Math.Max(256, _channelCapacity);
             _persistenceBatchChannel = Channel.CreateBounded<PersistenceRecord>(new BoundedChannelOptions(persistenceCapacity)
             {
                 FullMode = BoundedChannelFullMode.Wait,
@@ -97,6 +103,8 @@ public class MessageQueue : IDisposable
     public int MaxDeliveryCount => _config.MaxDeliveryCount;
     public int PendingCount => _pendingCount;
     public int InFlightCount => _inFlightMessages.Count;
+    public int ChannelCapacity => _channelCapacity;
+    public bool IsBackpressured => PendingCount >= _channelCapacity;
     public long LastActivityAt => _lastActivityAt;
     public long CreatedAt => _createdAt;
     public bool IsEmpty => PendingCount == 0 && InFlightCount == 0;
@@ -108,6 +116,16 @@ public class MessageQueue : IDisposable
     }
 
     public async Task<bool> EnqueueAsync(
+        QueueMessage message,
+        CancellationToken cancellationToken = default,
+        bool waitForPersistenceFlush = false,
+        bool bypassExactlyOnce = false)
+    {
+        var result = await EnqueueDetailedAsync(message, cancellationToken, waitForPersistenceFlush, bypassExactlyOnce);
+        return result == QueueEnqueueResult.Enqueued;
+    }
+
+    public async Task<QueueEnqueueResult> EnqueueDetailedAsync(
         QueueMessage message,
         CancellationToken cancellationToken = default,
         bool waitForPersistenceFlush = false,
@@ -130,36 +148,54 @@ public class MessageQueue : IDisposable
         {
             _logger.LogDebug("Message {MessageId} expired before enqueue", message.MessageId);
             await HandleDeadLetter(message);
-            return false;
+            return QueueEnqueueResult.Expired;
         }
 
         if (_ackedMessageIds.ContainsKey(message.MessageId))
         {
             _logger.LogDebug("Message {MessageId} is already acked and will not be enqueued", message.MessageId);
-            return false;
+            return QueueEnqueueResult.Duplicate;
         }
 
         var trackKnownId = _config.ExactlyOnce && !bypassExactlyOnce;
         if (trackKnownId && !_knownMessageIds.TryAdd(message.MessageId, 0))
         {
             _logger.LogDebug("Message {MessageId} is already known to exactly-once queue {QueueName}", message.MessageId, _config.Name);
-            return false;
+            return QueueEnqueueResult.Duplicate;
         }
 
         try
         {
-            if (_config.Durable)
+            await _enqueueLock.WaitAsync(cancellationToken);
+            try
             {
-                await QueuePersistenceRecordAsync(
-                    CreateEnqueueRecord(message),
-                    waitForFlush: waitForPersistenceFlush,
-                    cancellationToken);
-            }
+                if (!await WaitForEnqueueCapacityAsync(cancellationToken))
+                {
+                    if (trackKnownId)
+                    {
+                        _knownMessageIds.TryRemove(message.MessageId, out _);
+                    }
 
-            await _writer.WriteAsync(message, cancellationToken);
-            Interlocked.Increment(ref _pendingCount);
-            TouchActivity();
-            return true;
+                    return QueueEnqueueResult.Backpressured;
+                }
+
+                if (_config.Durable)
+                {
+                    await QueuePersistenceRecordAsync(
+                        CreateEnqueueRecord(message),
+                        waitForFlush: waitForPersistenceFlush,
+                        CancellationToken.None);
+                }
+
+                await _writer.WriteAsync(message, CancellationToken.None);
+                Interlocked.Increment(ref _pendingCount);
+                TouchActivity();
+                return QueueEnqueueResult.Enqueued;
+            }
+            finally
+            {
+                _enqueueLock.Release();
+            }
         }
         catch
         {
@@ -169,6 +205,32 @@ public class MessageQueue : IDisposable
             }
 
             throw;
+        }
+    }
+
+    private async Task<bool> WaitForEnqueueCapacityAsync(CancellationToken cancellationToken)
+    {
+        if (_maxEnqueueWaitMs == 0)
+        {
+            return !IsBackpressured && await _writer.WaitToWriteAsync(cancellationToken);
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_maxEnqueueWaitMs);
+
+        try
+        {
+            return await _writer.WaitToWriteAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Queue {QueueName} rejected enqueue due to backpressure after {TimeoutMs}ms (pending={Pending}, capacity={Capacity})",
+                _config.Name,
+                _maxEnqueueWaitMs,
+                PendingCount,
+                _channelCapacity);
+            return false;
         }
     }
 
@@ -1046,5 +1108,6 @@ public class MessageQueue : IDisposable
         }
 
         _persistenceLock.Dispose();
+        _enqueueLock.Dispose();
     }
 }

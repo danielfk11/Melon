@@ -37,6 +37,11 @@ public class MelonMetrics
         unit: "errors",
         description: "Total processing errors.");
 
+    private static readonly Counter<long> MessagesRejectedCounter = Meter.CreateCounter<long>(
+        "melonmq_messages_rejected_total",
+        unit: "messages",
+        description: "Total messages rejected before enqueue.");
+
     private static readonly Counter<long> ClusterReplicationCounter = Meter.CreateCounter<long>(
         "melonmq_cluster_replication_total",
         unit: "operations",
@@ -205,6 +210,22 @@ public class MelonMetrics
 
         MessagesConsumedCounter.Add(1, tags);
         OperationDurationHistogram.Record(duration.TotalMilliseconds, tags);
+    }
+
+    public void RecordMessageRejected(string queueName, string reason, string source = "tcp")
+    {
+        IncrementCounter("messages.rejected.total");
+        IncrementCounter($"messages.rejected.reason.{reason}");
+        IncrementCounter($"messages.rejected.queue.{queueName}");
+
+        var tags = new TagList
+        {
+            { "queue", queueName },
+            { "reason", reason },
+            { "source", source }
+        };
+
+        MessagesRejectedCounter.Add(1, tags);
     }
 
     public void RecordConnectionOpened(string transport = "tcp")

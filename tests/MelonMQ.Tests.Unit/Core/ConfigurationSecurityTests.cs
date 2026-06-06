@@ -84,6 +84,23 @@ public class ConfigurationSecurityTests
     }
 
     [Fact]
+    public void ValidateConfiguration_ShouldRejectNegativeBackpressureTimeout()
+    {
+        var config = new MelonMQConfiguration
+        {
+            Backpressure = new BackpressureConfiguration
+            {
+                MaxEnqueueWaitMs = -1
+            }
+        };
+
+        Action act = () => config.ValidateConfiguration();
+
+        act.Should().Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*MaxEnqueueWaitMs*");
+    }
+
+    [Fact]
     public void ValidateConfiguration_ShouldRejectInvalidApiKeyRole()
     {
         var config = new MelonMQConfiguration

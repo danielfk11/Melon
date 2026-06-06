@@ -6,7 +6,7 @@ Message broker leve em C# com protocolo TCP binario (framing + JSON) e API HTTP 
 
 - Estado publico atual: preview tecnica / beta aberta.
 - Indicado hoje para avaliacao, labs, homologacao e integracoes controladas.
-- Antes de chamar de release estavel, considere estas limitacoes atuais: benchmark oficial reproduzivel, backpressure ponta a ponta, pacote operacional de producao sem Docker e runbook completo de DR ainda estao em maturacao.
+- Antes de chamar de release estavel, considere estas limitacoes atuais: resultados de referencia de benchmark por hardware, limites multi-tenant granulares e rotacao operacional de segredos ainda estao em maturacao.
 
 ## Estado atual do projeto
 
@@ -78,6 +78,9 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
     "HeartbeatInterval": 10000,
     "MaxConnections": 1000,
     "MaxMessageSize": 1048576,
+    "Backpressure": {
+      "MaxEnqueueWaitMs": 1000
+    },
     "TcpTls": {
       "Enabled": false,
       "CertificatePath": "",
@@ -164,6 +167,12 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
 | MaxConnections | 1000 | Limite maximo de conexoes TCP |
 | MaxMessageSize | 1048576 | Tamanho maximo de payload (bytes) |
 
+#### MelonMQ:Backpressure
+
+| Chave | Default | O que faz |
+|---|---:|---|
+| MaxEnqueueWaitMs | 1000 | Tempo maximo que um publish aguarda espaco em fila classica cheia antes de ser rejeitado |
+
 #### MelonMQ:TcpTls
 
 | Chave | Default | O que faz |
@@ -191,6 +200,12 @@ Arquivo base: src/MelonMQ.Broker/appsettings.json
 Formato de hash suportado para Users quando RequireHashedPasswords=true:
 
 pbkdf2-sha256$iterations$saltBase64$hashBase64
+
+Gerar hash local:
+
+```bash
+scripts/hash-password.sh "senha-forte"
+```
 
 #### MelonMQ:Observability
 
@@ -322,6 +337,7 @@ Observacao:
 MelonMQ ja expoe metricas Prometheus em `/metrics`. O repositorio inclui uma stack local sem Docker para visualizar esses dados no Grafana:
 
 - `observability/prometheus/prometheus.yml`
+- `observability/prometheus/melonmq-rules.yml`
 - `observability/grafana/provisioning/datasources/prometheus.yml`
 - `observability/grafana/provisioning/dashboards/dashboards.yml`
 - `observability/grafana/dashboards/melonmq-overview.json`
@@ -368,6 +384,14 @@ Valide a stack:
 ```bash
 scripts/observability-check.sh
 ```
+
+Alertas Prometheus padrao incluidos:
+
+- broker sem scrape (`MelonMQBrokerDown`)
+- backlog alto (`MelonMQQueueBacklogGrowing`)
+- mensagens in-flight altas (`MelonMQInFlightMessagesStuck`)
+- rejeicao por backpressure (`MelonMQBackpressureActive`)
+- erros de processamento (`MelonMQProcessingErrors`)
 
 Se Prometheus ou Grafana nao estiverem instalados, o broker continua subindo e registra aviso no log. Para exigir falha do broker quando a observabilidade local nao iniciar, configure `MelonMQ:Observability:LocalStack:FailBrokerOnStartError=true`.
 
@@ -641,6 +665,7 @@ Se preferir autenticar explicitamente apos conectar, use:
 - MaxDeliveryCount da fila classica e 5 (fixo no runtime atual) antes de encaminhar para DLQ.
 - TTL pode vir por mensagem (ttlMs) ou por default da fila (defaultTtlMs).
 - Publish duplicado em fila `exactlyOnce` e tratado como operacao idempotente pelo `messageId`.
+- Publish para fila classica cheia aguarda ate `MelonMQ:Backpressure:MaxEnqueueWaitMs`; depois disso e rejeitado com erro TCP `code=backpressure` ou HTTP `429`.
 
 ### Durabilidade de fila classica
 
@@ -810,11 +835,18 @@ Scripts incluidos:
 
 - `scripts/dr-backup.sh <data-directory> <backup-directory>`
 - `scripts/dr-restore.sh <backup-archive.tar.gz> <target-data-directory> [--force]`
+- `scripts/dr-validate.sh`
 
 Recomendacao:
 
 - executar backup com broker em janela controlada ou com I/O estabilizado
 - validar restore periodicamente em ambiente limpo
+
+Validacao local do fluxo de DR:
+
+```bash
+scripts/dr-validate.sh
+```
 
 ## Operacao sem Docker
 
@@ -825,6 +857,30 @@ Templates e runbook para producao sem Docker ficam em `ops/`:
 - `ops/logrotate/melonmq` para rotacao de logs em Linux.
 - `ops/melonmq.env.example` com variaveis de ambiente de producao.
 - `ops/README.md` com instalacao, upgrade, logs, backup e restore.
+
+Validar templates operacionais e DR:
+
+```bash
+scripts/ops-validate.sh
+```
+
+Gerar pacote operacional sem Docker:
+
+```bash
+scripts/release-package.sh
+```
+
+## Benchmark oficial
+
+O benchmark rapido usa o projeto `tests/MelonMQ.Tests.Performance` com perfil controlado por variaveis:
+
+```bash
+MELONMQ_BENCHMARK_MESSAGES=10000 \
+MELONMQ_BENCHMARK_PAYLOAD_BYTES=256 \
+scripts/benchmark.sh
+```
+
+O script exige o broker ja rodando, valida `/health`, publica/consome a fila de benchmark e grava o resultado em `artifacts/benchmark/`.
 
 ## Roadmap tecnico (lacunas atuais)
 
@@ -842,16 +898,16 @@ Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para ev
 - [ ] Task: Benchmark oficial reproduzivel
   Definicao de pronto:
   - cenarios padrao publicados (1KB, 16KB, 128KB; queue e stream; ack on/off)
-  - script de benchmark versionado no repositorio
+  - script de benchmark versionado no repositorio (`scripts/benchmark.sh`)
   - resultados de referencia por perfil de hardware publicados
-  Mitigacao atual: validar performance apenas por testes ad-hoc.
+  Mitigacao atual: script rapido versionado; ainda falta publicar baseline por hardware e perfis de payload maiores.
 
-- [ ] Task: Backpressure e protecao de overload ponta a ponta
+- [x] Task: Backpressure e protecao de overload para publish
   Definicao de pronto:
-  - limites por conexao/tenant para publish e consume
-  - sinalizacao clara de throttling no protocolo e HTTP
-  - comportamento previsivel sob saturacao sem degradacao catasrofica
-  Mitigacao atual: limitar conexoes e tamanho de mensagem via configuracao.
+  - timeout de enqueue configuravel para fila classica
+  - sinalizacao clara de throttling no protocolo TCP e HTTP
+  - metrica Prometheus de mensagens rejeitadas por backpressure
+  Observacao: limites multi-tenant granulares continuam no escopo de seguranca enterprise.
 
 ### Fase 2 - Semantica e operacao segura
 
@@ -869,12 +925,12 @@ Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para ev
   - rotacao de credenciais e chave de cluster sem restart total
   Mitigacao atual: AUTH TCP + API key + TLS obrigatorios em Production/Staging.
 
-- [ ] Task: DR e backup/restore oficial
+- [x] Task: DR e backup/restore oficial
   Definicao de pronto:
-  - snapshot e restore documentados com RPO/RTO alvo
-  - teste periodico de restore em ambiente limpo
+  - snapshot e restore documentados
+  - teste de restore em ambiente limpo (`scripts/dr-validate.sh`)
   - runbook de disaster recovery publicado
-  Mitigacao atual: confiar em persistencia local e procedimentos manuais.
+  Observacao: RPO/RTO alvo ainda deve ser definido por ambiente de producao.
 
 ### Fase 3 - Ecossistema e adocao
 
@@ -897,7 +953,7 @@ Objetivo: fechar o gap de maturidade em producao, operacao e ecossistema para ev
   - chart/manifests de referencia com probes, recursos e persistencia
   - guias de deploy HA com 3 nos
   - alertas padrao para Prometheus/Grafana
-  Mitigacao atual: dashboards locais estao versionados em `observability/`; deploy segue manual com configuracao custom por ambiente.
+  Mitigacao atual: dashboards e regras Prometheus estao versionados em `observability/`; deploy segue manual com configuracao custom por ambiente.
 
 ## Licenca
 

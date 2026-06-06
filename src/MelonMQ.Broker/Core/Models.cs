@@ -20,6 +20,14 @@ public class InFlightMessage
     public long ExpiresAt { get; set; }
 }
 
+public enum QueueEnqueueResult
+{
+    Enqueued,
+    Duplicate,
+    Expired,
+    Backpressured
+}
+
 public class QueueConfiguration
 {
     public string Name { get; set; } = string.Empty;
