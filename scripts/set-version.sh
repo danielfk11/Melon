@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <version>"
-  echo "Example: $0 1.2.0"
+  echo "Example: $0 1.3.0"
   exit 1
 fi
 
@@ -12,13 +12,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROPS_FILE="${ROOT_DIR}/Directory.Build.props"
 
 if [[ "${VERSION}" == v* ]]; then
-  echo "Use sem prefixo 'v' no Version. Exemplo: 1.2.0"
+  echo "Use sem prefixo 'v' no Version. Exemplo: 1.3.0"
   exit 1
 fi
 
 if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
   echo "Formato de versao invalido: ${VERSION}"
-  echo "Exemplos validos: 1.2.0, 1.2.1-preview.1"
+  echo "Exemplos validos: 1.3.0, 1.3.1-preview.1"
   exit 1
 fi
 

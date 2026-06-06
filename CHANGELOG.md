@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0 - 2026-06-06
+
+- Backpressure configuravel para publish em fila classica, com erro TCP/HTTP previsivel e metrica Prometheus de rejeicao.
+- Scripts oficiais para benchmark, validacao DR, validacao operacional, hash PBKDF2 e pacote operacional sem Docker.
+- Regras Prometheus padrao para broker down, backlog alto, in-flight alto, backpressure e erros.
+- Release workflow agora tambem gera pacote operacional sem Docker.
+
 ## 1.2.0 - 2026-06-04
 
 - Stack local de observabilidade sem Docker com Prometheus e Grafana.
