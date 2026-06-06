@@ -46,6 +46,12 @@ project.fragment.lock.json
 artifacts/
 .observability/
 
+# Sample/runtime data
+data/
+samples/Consumer/melonmq_inbox.db*
+*.db-shm
+*.db-wal
+
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
 

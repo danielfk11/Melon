@@ -25,15 +25,19 @@ echo "Checking Prometheus readiness at ${PROMETHEUS_URL}/-/ready"
 curl -fsS "${PROMETHEUS_URL}/-/ready" >/dev/null
 
 echo "Waiting for Prometheus to ingest melonmq_queues_total"
+prometheus_found=0
 for _ in $(seq 1 12); do
   response="$(curl -fsS "${PROMETHEUS_URL}/api/v1/query?query=melonmq_queues_total")"
   if echo "${response}" | grep -q '"status":"success"' && ! echo "${response}" | grep -q '"result":\[\]'; then
     echo "Prometheus query ok"
+    prometheus_found=1
     break
   fi
 
   sleep 2
-else
+done
+
+if [ "${prometheus_found}" -ne 1 ]; then
   echo "Prometheus did not return melonmq_queues_total after waiting." >&2
   exit 1
 fi

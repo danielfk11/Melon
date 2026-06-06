@@ -40,27 +40,27 @@ jobs:
             -password pass:melonmq-test-password
 
       - name: Run unit tests
-        run: dotnet test tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj --configuration Release --no-build --nologo
+        run: dotnet test tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj --configuration Release --no-build --nologo --filter "Category=Fast"
 
-      - name: Run integration tests
+      - name: Run integration tests (non-chaos)
         env:
           MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
           MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
-        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo
+        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "Category=Integration&Category!=Chaos&Category!=Soak&Category!=RollingUpgrade"
 
       - name: Chaos reliability gate (kill-9, partial network, slow disk)
         env:
           MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
           MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
         run: |
-          dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "FullyQualifiedName~ReliabilityChaosPipelineTests"
+          dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "Category=Chaos"
           dotnet test tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj --configuration Release --no-build --nologo --filter "FullyQualifiedName~QuorumConsistency_ShouldRequireMajorityReplication"
 
       - name: Rolling upgrade compatibility gate
         env:
           MELONMQ_TLS_CERT_PATH: ${{ runner.temp }}/melonmq-tls/server.pfx
           MELONMQ_TLS_CERT_PASSWORD: melonmq-test-password
-        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "FullyQualifiedName~RollingUpgradeCompatibilityTests"
+        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "Category=RollingUpgrade"
 
       - name: Coverage gate - TcpServer
         env:
@@ -71,6 +71,7 @@ jobs:
             --configuration Release \
             --no-build \
             --nologo \
+            --filter "Category=Integration&Category!=Chaos&Category!=Soak&Category!=RollingUpgrade" \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=json \
             /p:CoverletOutput=TestResults/Coverage/TcpServer/ \
@@ -88,6 +89,7 @@ jobs:
             --configuration Release \
             --no-build \
             --nologo \
+            --filter "Category=Integration&Category!=Chaos&Category!=Soak&Category!=RollingUpgrade" \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=json \
             /p:CoverletOutput=TestResults/Coverage/Program/ \
@@ -105,6 +107,7 @@ jobs:
             --configuration Release \
             --no-build \
             --nologo \
+            --filter "Category=Integration&Category!=Chaos&Category!=Soak&Category!=RollingUpgrade" \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=json \
             /p:CoverletOutput=TestResults/Coverage/MelonConnection/ \

@@ -6,7 +6,7 @@ Message broker leve em C# com protocolo TCP binario (framing + JSON) e API HTTP 
 
 - Estado publico atual: preview tecnica / beta aberta.
 - Indicado hoje para avaliacao, labs, homologacao e integracoes controladas.
-- Antes de chamar de release estavel, considere estas limitacoes atuais: offsets de consumer groups de stream ficam em memoria e metadados de exchanges/bindings duraveis ainda nao sao persistidos no runtime.
+- Antes de chamar de release estavel, considere estas limitacoes atuais: benchmark oficial reproduzivel, backpressure ponta a ponta, pacote operacional de producao sem Docker e runbook completo de DR ainda estao em maturacao.
 
 ## Estado atual do projeto
 
@@ -14,6 +14,8 @@ Message broker leve em C# com protocolo TCP binario (framing + JSON) e API HTTP 
 - Exchanges (direct, fanout, topic) via TCP.
 - Stream queues com replay por offset e consumer groups.
 - Persistencia em disco para filas classicas e stream entries.
+- Persistencia de offsets de stream consumer/group em filas duraveis.
+- Persistencia de topologia de exchanges/bindings duraveis.
 - Cluster com replicacao entre nos e modo de consistencia leader/quorum.
 - Observabilidade com Prometheus e OpenTelemetry (OTLP).
 - Interface web de administracao embutida (wwwroot).
@@ -700,7 +702,8 @@ Variaveis de ambiente:
 ## Testes
 
 ```bash
-dotnet test MelonMQ.sln --nologo
+dotnet test tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj --filter "Category=Fast"
+dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --filter "Category=Integration&Category!=Chaos&Category!=Soak&Category!=RollingUpgrade"
 ```
 
 Cobertura atual inclui unitarios e integracao para:
@@ -763,6 +766,24 @@ Validacao automatizada (CI):
 
 ## Suite de confiabilidade para producao (chaos + soak)
 
+Os testes sao separados por categoria para evitar execucao acidental de suites longas:
+
+- `Category=Fast`: testes unitarios rapidos.
+- `Category=Integration`: testes de integracao que devem caber no ciclo normal de PR.
+- `Category=Chaos`: testes destrutivos/lentos de confiabilidade.
+- `Category=Soak`: perfis longos de 24h/72h.
+- `Category=RollingUpgrade`: compatibilidade de upgrade/rollback.
+
+Comandos uteis:
+
+```bash
+dotnet test tests/MelonMQ.Tests.Unit/MelonMQ.Tests.Unit.csproj --filter "Category=Fast"
+dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --filter "Category=Integration&Category!=Chaos&Category!=Soak&Category!=RollingUpgrade"
+dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --filter "Category=Chaos"
+dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --filter "Category=Soak"
+dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --filter "Category=RollingUpgrade"
+```
+
 Chaos suite no pipeline principal (`.github/workflows/ci.yml`):
 
 - `ReliabilityChaosPipelineTests.ChaosKill9_ShouldRecoverDurableMessages_AfterHardCrash`
@@ -794,6 +815,16 @@ Recomendacao:
 
 - executar backup com broker em janela controlada ou com I/O estabilizado
 - validar restore periodicamente em ambiente limpo
+
+## Operacao sem Docker
+
+Templates e runbook para producao sem Docker ficam em `ops/`:
+
+- `ops/systemd/melonmq.service` para Linux/systemd.
+- `ops/launchd/com.melonmq.broker.plist` para macOS/launchd.
+- `ops/logrotate/melonmq` para rotacao de logs em Linux.
+- `ops/melonmq.env.example` com variaveis de ambiente de producao.
+- `ops/README.md` com instalacao, upgrade, logs, backup e restore.
 
 ## Roadmap tecnico (lacunas atuais)
 

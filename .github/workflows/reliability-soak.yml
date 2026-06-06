@@ -35,4 +35,4 @@ jobs:
       - name: Run soak profile
         env:
           MELONMQ_SOAK_PROFILE: ${{ inputs.profile }}
-        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "FullyQualifiedName~ReliabilitySoakProfilesTests"
+        run: dotnet test tests/MelonMQ.Tests.Integration/MelonMQ.Tests.Integration.csproj --configuration Release --no-build --nologo --filter "Category=Soak"

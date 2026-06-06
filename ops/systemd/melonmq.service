@@ -1,0 +1,28 @@
+[Unit]
+Description=MelonMQ broker
+Documentation=https://github.com/danielfk11/MelonMQ
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=melonmq
+Group=melonmq
+WorkingDirectory=/opt/melonmq
+EnvironmentFile=/etc/melonmq/melonmq.env
+ExecStart=/usr/bin/dotnet /opt/melonmq/MelonMQ.Broker.dll
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+SyslogIdentifier=melonmq
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/melonmq /var/log/melonmq
+StandardOutput=append:/var/log/melonmq/broker.out.log
+StandardError=append:/var/log/melonmq/broker.err.log
+
+[Install]
+WantedBy=multi-user.target

@@ -8,6 +8,7 @@ namespace MelonMQ.Tests.Integration;
 public class ReliabilityChaosAndSloTests
 {
     [Fact]
+    [Trait("Category", "Chaos")]
     public async Task DurableQueue_ShouldRecoverMessages_AfterBrokerRestart()
     {
         var dataDir = Path.Combine(Path.GetTempPath(), "melonmq-chaos-tests", Guid.NewGuid().ToString("N"));

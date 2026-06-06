@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.melonmq.broker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/share/dotnet/dotnet</string>
+        <string>/opt/melonmq/MelonMQ.Broker.dll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/melonmq</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ASPNETCORE_ENVIRONMENT</key>
+        <string>Production</string>
+        <key>MelonMQ__TcpBindAddress</key>
+        <string>0.0.0.0</string>
+        <key>MelonMQ__TcpPort</key>
+        <string>5672</string>
+        <key>MelonMQ__HttpPort</key>
+        <string>9090</string>
+        <key>MelonMQ__DataDirectory</key>
+        <string>/var/lib/melonmq</string>
+        <key>MelonMQ__Observability__LocalStack__Enabled</key>
+        <string>false</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/melonmq/broker.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/melonmq/broker.err.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+</dict>
+</plist>
