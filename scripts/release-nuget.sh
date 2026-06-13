@@ -17,8 +17,8 @@ fi
 if [[ -z "${RELEASE_TAG}" ]]; then
   echo "Release tag is required."
   echo "Use one of:"
-  echo "  RELEASE_TAG=v1.3.0 NUGET_API_KEY=*** ./scripts/release-nuget.sh"
-  echo "  NUGET_API_KEY=*** ./scripts/release-nuget.sh --tag v1.3.0"
+  echo "  RELEASE_TAG=v1.3.1 NUGET_API_KEY=*** ./scripts/release-nuget.sh"
+  echo "  NUGET_API_KEY=*** ./scripts/release-nuget.sh --tag v1.3.1"
   exit 1
 fi
 
@@ -30,7 +30,7 @@ fi
 
 if [[ "${PROP_VERSION}" == v* ]]; then
   echo "Invalid Directory.Build.props <Version>: '${PROP_VERSION}'"
-  echo "Use version without 'v' prefix. Example: 1.3.0"
+  echo "Use version without 'v' prefix. Example: 1.3.1"
   exit 1
 fi
 

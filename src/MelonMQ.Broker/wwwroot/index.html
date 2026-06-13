@@ -637,6 +637,18 @@
                 <span class="metric-sub">Conexões TCP ativas</span>
             </div>
             <div class="metric-card">
+                <div class="icon con">👥</div>
+                <span class="metric-label">Consumers</span>
+                <span class="metric-value">{{ totalConsumers }}</span>
+                <span class="metric-sub">Consumers ativos em filas</span>
+            </div>
+            <div class="metric-card">
+                <div class="icon rate">🎚</div>
+                <span class="metric-label">Consumer Use</span>
+                <span class="metric-value">{{ formatPercent(consumerUsagePercent) }}</span>
+                <span class="metric-sub">{{ totalConsumerInFlight }} / {{ totalConsumerPrefetch }} slots em uso</span>
+            </div>
+            <div class="metric-card">
                 <div class="icon m">💬</div>
                 <span class="metric-label">Pending</span>
                 <span class="metric-value">{{ totalPending }}</span>
@@ -753,6 +765,8 @@
                                 <th>Flags</th>
                                 <th>Pending</th>
                                 <th>In-Flight</th>
+                                <th>Consumers</th>
+                                <th>Consumer Use</th>
                                 <th>TTL</th>
                                 <th>DLQ</th>
                                 <th>Last Activity</th>
@@ -773,6 +787,17 @@
                                 </td>
                                 <td class="mono">{{ q.pendingMessages.toLocaleString() }}</td>
                                 <td class="mono">{{ q.inFlightMessages.toLocaleString() }}</td>
+                                <td>
+                                    <span class="table-main mono">{{ formatNumber(q.consumerCount || 0) }}</span>
+                                    <span class="table-sub">Prefetch {{ formatNumber(q.consumerPrefetch || 0) }}</span>
+                                </td>
+                                <td style="min-width:140px;">
+                                    <span class="table-main mono">{{ formatPercent(q.consumerUtilizationPercent || 0) }}</span>
+                                    <div class="bar-wrap" style="margin-top:.35rem;">
+                                        <div class="bar-fill green" :style="{ width: boundedPercent(q.consumerUtilizationPercent || 0) + '%' }"></div>
+                                    </div>
+                                    <span class="table-sub">{{ formatNumber(q.consumerInFlight || 0) }} slots em uso</span>
+                                </td>
                                 <td>
                                     <span class="table-main mono">{{ formatTtl(q.defaultTtlMs) }}</span>
                                     <span class="table-sub">Max retry {{ q.maxDeliveryCount }}</span>
@@ -1187,6 +1212,18 @@ createApp({
         totalInFlight() {
             return this.userQueues.reduce((s,q) => s + q.inFlightMessages, 0);
         },
+        totalConsumers() {
+            return Number(this.stats?.consumerSummary?.activeConsumers || 0);
+        },
+        totalConsumerPrefetch() {
+            return Number(this.stats?.consumerSummary?.consumerPrefetch || 0);
+        },
+        totalConsumerInFlight() {
+            return Number(this.stats?.consumerSummary?.consumerInFlight || 0);
+        },
+        consumerUsagePercent() {
+            return Number(this.stats?.consumerSummary?.consumerUtilizationPercent || 0);
+        },
         userQueues() {
             return (this.stats?.queues || []).filter(q => !this.isGroupQueue(q.name));
         },
@@ -1335,6 +1372,15 @@ createApp({
         formatNumber(value) {
             if (value == null || value === '') return '—';
             return Number(value).toLocaleString();
+        },
+        formatPercent(value) {
+            const n = Number(value || 0);
+            return `${n.toFixed(n >= 10 ? 0 : 1)}%`;
+        },
+        boundedPercent(value) {
+            const n = Number(value || 0);
+            if (!Number.isFinite(n)) return 0;
+            return Math.max(0, Math.min(100, n));
         },
         formatTtl(value) {
             if (value == null) return 'none';

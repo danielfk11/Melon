@@ -374,47 +374,65 @@ app.MapGet("/health", (TcpServer tcpServer, ConnectionManager connectionManager,
     });
 });
 
-app.MapGet("/queues", (QueueManager queueManager, HttpContext context) =>
+app.MapGet("/queues", (QueueManager queueManager, TcpServer tcpServer, HttpContext context) =>
 {
     if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
-    var queues = queueManager.GetAllQueues().Select(q => new
+    var consumerStats = tcpServer.GetConsumerStatsSnapshot();
+    var queues = queueManager.GetAllQueues().Select(q =>
     {
-        name = q.Name,
-        durable = q.IsDurable,
-        exactlyOnce = q.IsExactlyOnce,
-        deadLetterQueue = q.DeadLetterQueue,
-        defaultTtlMs = q.DefaultTtlMs,
-        maxDeliveryCount = q.MaxDeliveryCount,
-        pendingMessages = q.PendingCount,
-        inFlightMessages = q.InFlightCount,
-        idleTimeMs = q.IdleTimeMs,
-        createdAtUnixMs = q.CreatedAt,
-        lastActivityAtUnixMs = q.LastActivityAt
+        consumerStats.Queues.TryGetValue(q.Name, out var queueConsumers);
+        return new
+        {
+            name = q.Name,
+            durable = q.IsDurable,
+            exactlyOnce = q.IsExactlyOnce,
+            deadLetterQueue = q.DeadLetterQueue,
+            defaultTtlMs = q.DefaultTtlMs,
+            maxDeliveryCount = q.MaxDeliveryCount,
+            pendingMessages = q.PendingCount,
+            inFlightMessages = q.InFlightCount,
+            consumerCount = queueConsumers?.ConsumerCount ?? 0,
+            consumerPrefetch = queueConsumers?.ConsumerPrefetch ?? 0,
+            consumerInFlight = queueConsumers?.ConsumerInFlight ?? 0,
+            consumerUtilizationPercent = queueConsumers?.ConsumerUtilizationPercent ?? 0,
+            idleTimeMs = q.IdleTimeMs,
+            createdAtUnixMs = q.CreatedAt,
+            lastActivityAtUnixMs = q.LastActivityAt
+        };
     });
 
     return Results.Ok(new { queues = queues });
 });
 
-app.MapGet("/stats", (HttpContext context, QueueManager queueManager, ConnectionManager connectionManager, MelonMetrics metrics, ClusterCoordinator clusterCoordinator, MelonMQConfiguration melonConfig, IWebHostEnvironment environment) =>
+app.MapGet("/stats", (HttpContext context, QueueManager queueManager, ConnectionManager connectionManager, TcpServer tcpServer, MelonMetrics metrics, ClusterCoordinator clusterCoordinator, MelonMQConfiguration melonConfig, IWebHostEnvironment environment) =>
 {
     if (!ValidateApiAccess(context, SecurityConfiguration.RoleRead, readOnlyEndpoint: true))
         return Results.Unauthorized();
 
-    var queues = queueManager.GetAllQueues().Select(q => new
+    var consumerStats = tcpServer.GetConsumerStatsSnapshot();
+    var queues = queueManager.GetAllQueues().Select(q =>
     {
-        name = q.Name,
-        durable = q.IsDurable,
-        exactlyOnce = q.IsExactlyOnce,
-        deadLetterQueue = q.DeadLetterQueue,
-        defaultTtlMs = q.DefaultTtlMs,
-        maxDeliveryCount = q.MaxDeliveryCount,
-        pendingMessages = q.PendingCount,
-        inFlightMessages = q.InFlightCount,
-        idleTimeMs = q.IdleTimeMs,
-        createdAtUnixMs = q.CreatedAt,
-        lastActivityAtUnixMs = q.LastActivityAt
+        consumerStats.Queues.TryGetValue(q.Name, out var queueConsumers);
+        return new
+        {
+            name = q.Name,
+            durable = q.IsDurable,
+            exactlyOnce = q.IsExactlyOnce,
+            deadLetterQueue = q.DeadLetterQueue,
+            defaultTtlMs = q.DefaultTtlMs,
+            maxDeliveryCount = q.MaxDeliveryCount,
+            pendingMessages = q.PendingCount,
+            inFlightMessages = q.InFlightCount,
+            consumerCount = queueConsumers?.ConsumerCount ?? 0,
+            consumerPrefetch = queueConsumers?.ConsumerPrefetch ?? 0,
+            consumerInFlight = queueConsumers?.ConsumerInFlight ?? 0,
+            consumerUtilizationPercent = queueConsumers?.ConsumerUtilizationPercent ?? 0,
+            idleTimeMs = q.IdleTimeMs,
+            createdAtUnixMs = q.CreatedAt,
+            lastActivityAtUnixMs = q.LastActivityAt
+        };
     });
 
     var allMetrics = metrics.GetAllMetrics();
@@ -423,6 +441,13 @@ app.MapGet("/stats", (HttpContext context, QueueManager queueManager, Connection
     {
         queues = queues,
         connections = connectionManager.ConnectionCount,
+        consumerSummary = new
+        {
+            activeConsumers = consumerStats.ActiveConsumers,
+            consumerPrefetch = consumerStats.ConsumerPrefetch,
+            consumerInFlight = consumerStats.ConsumerInFlight,
+            consumerUtilizationPercent = consumerStats.ConsumerUtilizationPercent
+        },
         totalQueues = queueManager.QueueCount,
         metrics = allMetrics,
         cluster = clusterCoordinator.GetStatus(),

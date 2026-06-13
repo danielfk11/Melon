@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1 - 2026-06-12
+
+- Painel operacional agora mostra consumers ativos por fila e uso de prefetch/in-flight em percentual.
+
 ## 1.3.0 - 2026-06-06
 
 - Backpressure configuravel para publish em fila classica, com erro TCP/HTTP previsivel e metrica Prometheus de rejeicao.

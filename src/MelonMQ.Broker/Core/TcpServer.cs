@@ -13,6 +13,47 @@ namespace MelonMQ.Broker.Core;
 
 public class TcpServer
 {
+    private sealed record ConsumerSubscription(
+        string ConnectionId,
+        string QueueName,
+        string ActualQueueName,
+        string ConsumerKey);
+
+    public sealed record QueueConsumerStats(
+        string QueueName,
+        int ConsumerCount,
+        int ConsumerPrefetch,
+        int ConsumerInFlight,
+        double ConsumerUtilizationPercent);
+
+    public sealed record ConsumerStatsSnapshot(
+        int ActiveConsumers,
+        int ConsumerPrefetch,
+        int ConsumerInFlight,
+        double ConsumerUtilizationPercent,
+        IReadOnlyDictionary<string, QueueConsumerStats> Queues);
+
+    private sealed class MutableConsumerStats
+    {
+        public int ConsumerCount;
+        public int ConsumerPrefetch;
+        public int ConsumerInFlight;
+
+        public QueueConsumerStats ToSnapshot(string queueName)
+        {
+            var utilization = ConsumerPrefetch <= 0
+                ? 0
+                : Math.Min(100, (ConsumerInFlight / (double)ConsumerPrefetch) * 100);
+
+            return new QueueConsumerStats(
+                queueName,
+                ConsumerCount,
+                ConsumerPrefetch,
+                ConsumerInFlight,
+                Math.Round(utilization, 2));
+        }
+    }
+
     private readonly QueueManager _queueManager;
     private readonly ConnectionManager _connectionManager;
     private readonly MelonMetrics _metrics;
@@ -25,6 +66,7 @@ public class TcpServer
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentDictionary<ulong, (string ConnectionId, string QueueName, ulong QueueDeliveryTag)> _deliveryTagMap = new();
     private readonly ConcurrentDictionary<string, int> _connectionInFlightCount = new();
+    private readonly ConcurrentDictionary<string, ConsumerSubscription> _consumerSubscriptions = new();
     private readonly ConcurrentBag<Task> _activeClientTasks = new();
 
     public bool IsListening { get; private set; }
@@ -118,6 +160,83 @@ public class TcpServer
     {
         _ = StopAsync();
     }
+
+    public ConsumerStatsSnapshot GetConsumerStatsSnapshot()
+    {
+        var queueStats = new Dictionary<string, MutableConsumerStats>(StringComparer.Ordinal);
+        var activeConsumers = 0;
+        var totalPrefetch = 0;
+        var totalInFlight = 0;
+
+        foreach (var subscription in _consumerSubscriptions.Values)
+        {
+            var connection = _connectionManager.GetConnection(subscription.ConnectionId);
+            if (connection == null || connection.IsDisposed)
+            {
+                continue;
+            }
+
+            var prefetch = Math.Max(0, connection.Prefetch);
+            var inFlight = _connectionInFlightCount.GetValueOrDefault(
+                $"{subscription.ConnectionId}:{subscription.ActualQueueName}",
+                0);
+
+            activeConsumers++;
+            totalPrefetch += prefetch;
+            totalInFlight += inFlight;
+
+            AddQueueConsumerStats(queueStats, subscription.QueueName, prefetch, inFlight);
+            if (!string.Equals(subscription.ActualQueueName, subscription.QueueName, StringComparison.Ordinal))
+            {
+                AddQueueConsumerStats(queueStats, subscription.ActualQueueName, prefetch, inFlight);
+            }
+        }
+
+        var utilization = totalPrefetch <= 0
+            ? 0
+            : Math.Min(100, (totalInFlight / (double)totalPrefetch) * 100);
+
+        return new ConsumerStatsSnapshot(
+            activeConsumers,
+            totalPrefetch,
+            totalInFlight,
+            Math.Round(utilization, 2),
+            queueStats.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value.ToSnapshot(kvp.Key),
+                StringComparer.Ordinal));
+    }
+
+    private static void AddQueueConsumerStats(
+        Dictionary<string, MutableConsumerStats> stats,
+        string queueName,
+        int prefetch,
+        int inFlight)
+    {
+        if (!stats.TryGetValue(queueName, out var current))
+        {
+            current = new MutableConsumerStats();
+            stats[queueName] = current;
+        }
+
+        current.ConsumerCount++;
+        current.ConsumerPrefetch += prefetch;
+        current.ConsumerInFlight += inFlight;
+    }
+
+    private void RegisterConsumer(string connectionId, string queueName, string actualQueueName, string consumerKey)
+    {
+        _consumerSubscriptions[BuildConsumerSubscriptionKey(connectionId, consumerKey)] =
+            new ConsumerSubscription(connectionId, queueName, actualQueueName, consumerKey);
+    }
+
+    private void UnregisterConsumer(string connectionId, string consumerKey)
+    {
+        _consumerSubscriptions.TryRemove(BuildConsumerSubscriptionKey(connectionId, consumerKey), out _);
+    }
+
+    private static string BuildConsumerSubscriptionKey(string connectionId, string consumerKey) =>
+        $"{connectionId}:{consumerKey}";
 
     /// <summary>
     /// Thread-safe frame write. Multiple tasks (consumer loops, ack/nack responses, heartbeat)
@@ -957,6 +1076,7 @@ public class TcpServer
         {
             if (connection.ActiveConsumers.TryRemove(consumerKey, out var existingClassicConsumer))
             {
+                UnregisterConsumer(connection.Id, consumerKey);
                 try { existingClassicConsumer.Cts.Cancel(); } catch { }
                 try { await existingClassicConsumer.Task.ConfigureAwait(false); } catch { }
             }
@@ -1001,6 +1121,7 @@ public class TcpServer
         // Cancel and await existing consumer for this consumer key if any
         if (connection.ActiveConsumers.TryRemove(consumerKey, out var existingConsumer))
         {
+            UnregisterConsumer(connection.Id, consumerKey);
             try { existingConsumer.Cts.Cancel(); } catch { }
             try { await existingConsumer.Task.ConfigureAwait(false); } catch { }
         }
@@ -1030,6 +1151,7 @@ public class TcpServer
             CorrelationId = frame.CorrelationId,
             Payload = new { success = true, queue = logicalDeliveryQueue }
         });
+        RegisterConsumer(connection.Id, payload.Queue, actualQueueName, consumerKey);
 
         var consumerTask = Task.Run(async () =>
         {
@@ -1081,6 +1203,7 @@ public class TcpServer
             }
             finally
             {
+                UnregisterConsumer(connection.Id, consumerKey);
                 _connectionInFlightCount.TryRemove(inFlightKey, out _);
             }
         });
